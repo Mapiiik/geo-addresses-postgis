@@ -24,10 +24,11 @@ from zipfile import ZipFile
 
 import requests
 
-from importer.db import connect, run_sql
+from importer.db import connect, ensure_extensions, run_sql
 
-# RUIAN CSV URL template — date is YYYYMMDD of the last day of the month
-DATA_URL = "http://vdp.cuzk.cz/vymenny_format/csv/{}_OB_ADR_csv.zip"
+# RUIAN CSV URL template — date is YYYYMMDD of the last day of the month.
+# vdp.cuzk.cz drops plain HTTP connections, so HTTPS is required.
+DATA_URL = "https://vdp.cuzk.cz/vymenny_format/csv/{}_OB_ADR_csv.zip"
 
 # Number of parallel workers for COPY (one CSV = one region)
 MAX_WORKERS = int(os.getenv("RUIAN_WORKERS", "4"))
@@ -142,21 +143,26 @@ def copy_file_to_staging(path):
         cur.execute("SET LOCAL synchronous_commit = OFF;")
         cur.execute("SET LOCAL maintenance_work_mem = '512MB';")
 
+        copy_sql = """
+            COPY cz_addresses_staging (
+                kod_adm, obec_kod, obec_nazev, momc_kod, momc_nazev,
+                mop_kod, mop_nazev, cast_obce_kod, cast_obce_nazev,
+                ulice_kod, ulice_nazev, typ_so, cislo_domovni,
+                cislo_orientacni, cislo_orientacni_znak, psc,
+                y, x, plati_od
+            ) FROM STDIN WITH (FORMAT csv, DELIMITER ';', NULL '')
+        """
+
         with open(path, encoding="windows-1250", errors="replace") as f:
             # Skip the header row (RUIAN CSV files have a column-name header)
             next(f)
-            cur.copy_expert(
-                """
-                COPY cz_addresses_staging (
-                    kod_adm, obec_kod, obec_nazev, momc_kod, momc_nazev,
-                    mop_kod, mop_nazev, cast_obce_kod, cast_obce_nazev,
-                    ulice_kod, ulice_nazev, typ_so, cislo_domovni,
-                    cislo_orientacni, cislo_orientacni_znak, psc,
-                    y, x, plati_od
-                ) FROM STDIN WITH (FORMAT csv, DELIMITER ';', NULL '')
-                """,
-                f,
-            )
+            with cur.copy(copy_sql) as copy:
+                # Stream line by line. psycopg3 buffers internally, so this is
+                # as fast as feeding the whole file in one chunk; the str→bytes
+                # encoding from windows-1250 to client_encoding (UTF-8) happens
+                # transparently because the file was opened in text mode.
+                for line in f:
+                    copy.write(line)
 
         conn.commit()
         cur.close()
@@ -194,7 +200,7 @@ def import_ruian(src_dir):
 
 
 def materialize_new_table():
-    """Build cz_addresses_new with geometry from the staging table.
+    """Build cz_addresses_new with geometry and search_label from staging.
 
     The live cz_addresses table is untouched during this step.
 
@@ -203,8 +209,12 @@ def materialize_new_table():
         but the actual JTSK values are negative — hence -x, -y.
       - The CSV column order is (Y, X), so staging.y / staging.x match the
         file header names, not the argument order of ST_MakePoint.
+
+    The search_label column is built per Czech vyhláška 359/2011 Sb. § 6
+    (rules for composing an address from RUIAN). It powers fuzzy matching
+    on the API /v1/search endpoint — see queries.py / pg_trgm GIN index.
     """
-    print("Materializing cz_addresses_new with geometry…")
+    print("Materializing cz_addresses_new with geometry and search_label…")
     run_sql("""
         CREATE TABLE cz_addresses_new AS
         SELECT
@@ -219,7 +229,43 @@ def materialize_new_table():
             psc,
             plati_od,
             ST_SetSRID(ST_MakePoint(-x, -y), 5514)                       AS geometry_jtsk,
-            ST_Transform(ST_SetSRID(ST_MakePoint(-x, -y), 5514), 4326)   AS geometry
+            ST_Transform(ST_SetSRID(ST_MakePoint(-x, -y), 5514), 4326)   AS geometry,
+            -- search_label per vyhláška 359/2011 Sb., příloha 1 (vzory 1–6).
+            -- Lokátor = ulice OR cast_obce (when ≠ obec); fallback to "č.p."
+            -- prefix only when neither is shown. "č.ev." is always present
+            -- before evidence numbers. cast_obce on its own line only when
+            -- a street is also shown AND it differs from obec. Praha gets
+            -- mop_nazev (e.g. "Praha 6") instead of plain obec_nazev.
+            lower(
+                COALESCE(
+                    NULLIF(ulice_nazev, '') || ' ',
+                    CASE WHEN cast_obce_nazev IS NOT NULL
+                              AND cast_obce_nazev <> obec_nazev
+                         THEN cast_obce_nazev || ' ' END,
+                    ''
+                )
+                || CASE
+                     WHEN typ_so = 'č.ev.' THEN 'č.ev. '
+                     WHEN NULLIF(ulice_nazev, '') IS NULL
+                          AND (cast_obce_nazev IS NULL
+                               OR cast_obce_nazev = obec_nazev)
+                       THEN 'č.p. '
+                     ELSE ''
+                   END
+                || COALESCE(cislo_domovni::text, '')
+                || COALESCE('/' || cislo_orientacni::text, '')
+                || COALESCE(cislo_orientacni_znak, '')
+                || CASE WHEN NULLIF(ulice_nazev, '') IS NOT NULL
+                             AND cast_obce_nazev IS NOT NULL
+                             AND cast_obce_nazev <> obec_nazev
+                        THEN ', ' || cast_obce_nazev
+                        ELSE '' END
+                || ', '
+                || COALESCE(psc::text || ' ', '')
+                || CASE WHEN obec_nazev = 'Praha' AND mop_nazev IS NOT NULL
+                        THEN mop_nazev
+                        ELSE obec_nazev END
+            ) AS search_label
         FROM cz_addresses_staging
         WHERE x IS NOT NULL AND y IS NOT NULL;
 
@@ -245,6 +291,9 @@ def create_indexes_on_new():
         CREATE INDEX cz_addr_new_street_idx         ON cz_addresses_new (ulice_nazev);
         CREATE INDEX cz_addr_new_city_idx           ON cz_addresses_new (obec_nazev);
         CREATE INDEX cz_addr_new_psc_idx            ON cz_addresses_new (psc);
+        -- pg_trgm GIN index powers fuzzy search on the API /v1/search endpoint.
+        CREATE INDEX cz_addr_new_search_trgm_idx
+            ON cz_addresses_new USING GIN (search_label gin_trgm_ops);
     """)
 
 
@@ -276,6 +325,7 @@ def atomic_swap():
         ALTER INDEX cz_addr_new_street_idx         RENAME TO cz_addr_street_idx;
         ALTER INDEX cz_addr_new_city_idx           RENAME TO cz_addr_city_idx;
         ALTER INDEX cz_addr_new_psc_idx            RENAME TO cz_addr_psc_idx;
+        ALTER INDEX cz_addr_new_search_trgm_idx    RENAME TO cz_addr_search_trgm_idx;
 
         COMMIT;
     """)
@@ -291,6 +341,7 @@ def main():
     print(f"Temp dir: {tmpdir}")
 
     try:
+        ensure_extensions()
         src_dir = download_ruian(tmpdir)
         prepare_staging()
         import_ruian(src_dir)

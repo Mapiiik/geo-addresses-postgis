@@ -1,4 +1,4 @@
-FROM osgeo/gdal:ubuntu-small-latest
+FROM ghcr.io/osgeo/gdal:ubuntu-small-latest
 
 # Stream Python output straight to stdout so `docker logs` shows live progress.
 ENV PYTHONUNBUFFERED=1 \

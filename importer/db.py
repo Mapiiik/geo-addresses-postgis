@@ -7,7 +7,7 @@ Centralises:
 """
 import os
 
-import psycopg2
+import psycopg
 
 try:
     PG_CONN = os.environ["PG_CONN_ADDRESSES"]
@@ -22,8 +22,8 @@ PG_CONN_OGR = "PG:" + PG_CONN
 
 
 def connect():
-    """Open a new psycopg2 connection using the shared connection string."""
-    return psycopg2.connect(PG_CONN)
+    """Open a new psycopg connection using the shared connection string."""
+    return psycopg.connect(PG_CONN)
 
 
 def run_sql(sql):
@@ -36,3 +36,26 @@ def run_sql(sql):
         cur.close()
     finally:
         conn.close()
+
+
+def ensure_extensions():
+    """Self-heal: ensure required PostgreSQL extensions are installed.
+
+    - postgis: geometry types and spatial functions used everywhere.
+    - pg_trgm: trigram-based fuzzy matching used by the API /v1/search
+               endpoint (typo tolerance, partial / out-of-order matches).
+
+    The postgis/postgis image installs postgis automatically on first DB
+    init, but only when the data directory is empty. If you migrated an
+    existing volume or added pg_trgm later, the extensions may be missing.
+    This call is idempotent and cheap, so we run it at the start of every
+    importer.
+
+    Requires superuser privileges, which POSTGRES_USER has by default.
+    """
+    run_sql(
+        """
+        CREATE EXTENSION IF NOT EXISTS postgis;
+        CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        """
+    )

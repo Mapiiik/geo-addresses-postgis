@@ -25,7 +25,7 @@ Strategy:
 import datetime
 import subprocess
 
-from importer.db import PG_CONN_OGR, connect, run_sql
+from importer.db import PG_CONN_OGR, connect, ensure_extensions, run_sql
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -119,20 +119,33 @@ def validate_import(table_name):
             f"{MIN_EXPECTED_ROWS:,}. Aborting before swap — live table is untouched."
         )
 
-def add_wgs84_geometry(table_name):
-    """Add the WGS84 geometry as a STORED generated column.
+def add_derived_columns(table_name):
+    """Add WGS84 geometry and search_label as STORED generated columns.
 
-    Computed once per row at write time and persisted on disk — no separate
-    UPDATE pass over the whole table. ALTER TABLE rewrites the table once to
-    fill the column, which is significantly cheaper than an UPDATE because
-    it does not produce dead tuples that VACUUM would later need to reclaim.
+    Both are computed once per row at write time and persisted on disk —
+    no separate UPDATE pass. Done as a single ALTER TABLE so PostgreSQL
+    only rewrites the table once for both columns combined.
+
+    search_label is a lowercased "ulica kucni_broj, postanski_broj naselje"
+    composite — feeds the pg_trgm GIN index used by /v1/search for fuzzy
+    matching (typo tolerance, partial / out-of-order matches).
     """
     working_table = f"{table_name}_new"
-    print(f"Adding WGS84 (EPSG:{WGS84_SRID}) geometry as generated column…")
+    print(f"Adding WGS84 geometry and search_label as generated columns…")
     run_sql(f"""
         ALTER TABLE {working_table}
-        ADD COLUMN geometry geometry(Point, {WGS84_SRID})
-        GENERATED ALWAYS AS (ST_Transform(geometry_htrs96, {WGS84_SRID})) STORED;
+            ADD COLUMN geometry geometry(Point, {WGS84_SRID})
+                GENERATED ALWAYS AS (ST_Transform(geometry_htrs96, {WGS84_SRID})) STORED,
+            ADD COLUMN search_label text
+                GENERATED ALWAYS AS (
+                    lower(
+                        COALESCE(ulica || ' ', '')
+                        || COALESCE(kucni_broj::text, '')
+                        || ', '
+                        || COALESCE(postanski_broj::text || ' ', '')
+                        || COALESCE(naselje, '')
+                    )
+                ) STORED;
     """)
 
 
@@ -159,6 +172,10 @@ def create_indexes(table_name):
         CREATE INDEX hr_addr_new_house_idx      ON {working_table} (kucni_broj);
         CREATE INDEX hr_addr_new_settlement_idx ON {working_table} (naselje);
         CREATE INDEX hr_addr_new_postcode_idx   ON {working_table} (postanski_broj);
+
+        -- pg_trgm GIN index powers fuzzy search on the API /v1/search endpoint.
+        CREATE INDEX hr_addr_new_search_trgm_idx
+            ON {working_table} USING GIN (search_label gin_trgm_ops);
     """)
 
 
@@ -200,6 +217,7 @@ def atomic_swap(table_name):
         ALTER INDEX hr_addr_new_house_idx             RENAME TO hr_addr_house_idx;
         ALTER INDEX hr_addr_new_settlement_idx        RENAME TO hr_addr_settlement_idx;
         ALTER INDEX hr_addr_new_postcode_idx          RENAME TO hr_addr_postcode_idx;
+        ALTER INDEX hr_addr_new_search_trgm_idx       RENAME TO hr_addr_search_trgm_idx;
 
         COMMIT;
     """)
@@ -212,11 +230,13 @@ def atomic_swap(table_name):
 def main():
     started = datetime.datetime.now()
 
+    ensure_extensions()
+
     for layer, table in LAYERS.items():
         prepare_workspace(table)
         import_layer(layer, table)
         validate_import(table)
-        add_wgs84_geometry(table)
+        add_derived_columns(table)
         create_indexes(table)
         make_logged_and_analyze(table)
         atomic_swap(table)

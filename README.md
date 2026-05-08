@@ -7,8 +7,8 @@ date by automated monthly imports from the official open-data sources:
 - **HR** — INSPIRE Address WFS from [DGU geoportal](https://geoportal.dgu.hr/)
 
 The database is intended as a backend for downstream applications (e.g. CRM
-systems, geocoding, address validation). A REST API on top is planned but not
-yet part of this repo.
+systems, geocoding, address validation), either via direct DB connection or
+via the bundled REST API service.
 
 ## Features
 
@@ -22,12 +22,25 @@ yet part of this repo.
 - **Both projections** — every address has both the **native projection**
   geometry (S-JTSK / EPSG:5514 for CZ, HTRS96/TM / EPSG:3765 for HR) and a
   **WGS84 / EPSG:4326** geometry for general use, with GIST indexes on both.
+- **REST API** — FastAPI service with structured lookup (incl. CZ fallback
+  ladder), by-id, reverse geocoding, fuzzy autocomplete, and dataset metadata.
+  Auto-generated OpenAPI / Swagger docs at `/docs`.
+- **Fuzzy search** — every address has a precomputed `search_label`
+  (composed per Czech vyhláška 359/2011 Sb. for CZ; "ulica kucni_broj,
+  postanski_broj naselje" for HR), indexed with a `pg_trgm` GIN index.
+  Tolerates typos, partial words, and out-of-order tokens.
 - **Self-contained Docker stack** — `compose.production.yaml` spins up
-  PostGIS + the importer with one command.
+  PostGIS + the importer + the API with one command.
 
 ## Architecture
 
 ```
+                          ┌────────────────────────┐
+   HTTP clients  ─────────►   addresses_api         │
+                          │   (FastAPI, port 8000) │
+                          └────────────┬───────────┘
+                                       │ read-only role
+                                       ▼
 ┌────────────────────────┐        ┌──────────────────────────┐
 │  postgis  (PostGIS 18) │◄──────►│  addresses_importer       │
 │                         │        │  • importer.scheduler    │
@@ -40,8 +53,10 @@ yet part of this repo.
                                           └── WFS  → geoportal.dgu.hr (HR)
 ```
 
-Both services live on the default Compose network; the importer reaches the DB
-by service name (`host=postgis`).
+All three services share the default Compose network; the importer and API
+reach the DB by service name (`host=postgis`). The API uses a read-only
+`addresses_api` role with `SELECT`-only privileges — it cannot modify data
+or interfere with the importer's atomic-swap.
 
 ## Quick start
 
@@ -64,9 +79,14 @@ docker compose -f compose.production.yaml run --rm addresses_importer \
     python3 -m importer.import_hr_wfs
 ```
 
-The CZ import takes ~5–10 minutes (downloads ~120 MB of CSVs, ~3M rows). The
-HR import takes longer because the WFS is paged and slower (~1.7M rows, may
-take 30–60 minutes depending on DGU response times).
+Indicative import times (fast SSD, your mileage will vary with network and disk):
+
+- **CZ**: ~1 minute end-to-end (download ~60 MB ZIP, parallel COPY of ~6 200
+  per-region CSVs into staging, materialise ~3M rows, build all indexes,
+  atomic swap).
+- **HR**: ~3-4 minutes end-to-end. The WFS server is the bottleneck —
+  expect ~2-3 minutes streaming ~1.7M rows over the wire, plus ~1 minute
+  for the post-import column rewrites and indexing.
 
 ## Configuration
 
@@ -78,7 +98,14 @@ All configuration is via environment variables, set in `.env` (see
 | `POSTGRES_USER`     | `addresses`   | postgis service | DB superuser created on first start                           |
 | `POSTGRES_PASSWORD` | `postgis`     | postgis service | DB password — **change before deploying anywhere reachable**  |
 | `POSTGRES_DB`       | `addresses`   | postgis service | Database name                                                 |
+| `API_DB_PASSWORD`   | `apipassword` | postgis + API   | Password for the read-only `addresses_api` role               |
+| `API_KEYS`          | (empty)       | API             | Comma-separated allowlist of `X-API-Key` values; empty = open |
+| `API_PORT`          | `8000`        | API             | Host port the API is exposed on                               |
+| `PG_POOL_MIN`       | `2`           | API             | Minimum connections in the API's psycopg pool                 |
+| `PG_POOL_MAX`       | `10`          | API             | Maximum connections in the API's psycopg pool                 |
+| `CACHE_MAX_AGE`     | `3600`        | API             | Default `Cache-Control: max-age` (seconds) on cacheable GETs  |
 | `PG_CONN_ADDRESSES` | (constructed) | importer        | libpq connection string; built from `POSTGRES_*` by Compose   |
+| `PG_CONN_API`       | (constructed) | API             | libpq connection string for the read-only role                |
 | `SCHEDULE_DAY`      | `5`           | scheduler       | Day of month (1–28) when the monthly run fires                |
 | `SCHEDULE_HOUR`     | `3`           | scheduler       | Hour (0–23) of the run                                        |
 | `SCHEDULE_MINUTE`   | `0`           | scheduler       | Minute (0–59) of the run                                      |
@@ -110,9 +137,10 @@ After a successful import, the live tables are:
 | `plati_od`              | `date`                  | Valid from                     |
 | `geometry_jtsk`         | `geometry(Point, 5514)` | Native S-JTSK / Křovák         |
 | `geometry`              | `geometry(Point, 4326)` | WGS84                          |
+| `search_label`          | `text`                  | Lowercased formatted address per vyhláška 359/2011 Sb., used by `/v1/search` |
 
 Indexes: GIST on both geometry columns, btree on `obec_nazev`, `ulice_nazev`,
-`psc`.
+`psc`, GIN trigram (`gin_trgm_ops`) on `search_label`.
 
 ### `hr_addresses`
 
@@ -122,8 +150,135 @@ INSPIRE-flavoured schema as delivered by the DGU WFS. Key columns include
 
 - `geometry_htrs96` — `geometry(Point, 3765)` (native HTRS96 / TM)
 - `geometry`        — `geometry(Point, 4326)` (WGS84, generated column)
+- `search_label`    — `text` (lowercased "ulica kucni_broj, postanski_broj naselje", generated column)
 
-Indexes: GIST on both geometries, btree on the four attribute columns above.
+Indexes: GIST on both geometries, btree on the four attribute columns above,
+GIN trigram on `search_label`.
+
+### Required PostgreSQL extensions
+
+The importer ensures both extensions on every run via
+`CREATE EXTENSION IF NOT EXISTS`:
+
+- **`postgis`** — geometry types and spatial functions
+- **`pg_trgm`** — trigram fuzzy matching used by `/v1/search`
+
+Both are pre-installed in the `postgis/postgis:18-3.6` image; the importer
+only needs to enable them in the database.
+
+## REST API
+
+The bundled `addresses_api` service exposes a versioned REST API over the
+two tables. Generic by design — no consumer-specific assumptions baked in.
+
+Once the stack is up, browse the auto-generated docs at:
+
+- `http://localhost:8000/docs` — Swagger UI
+- `http://localhost:8000/openapi.json` — OpenAPI 3.1 spec (suitable for
+  generating typed clients in PHP, TypeScript, …)
+
+### Endpoints
+
+| Method | Path                                       | Purpose                                                |
+|--------|--------------------------------------------|--------------------------------------------------------|
+| POST   | `/v1/lookup`                               | Structured lookup. CZ runs a 5-variant fallback ladder.|
+| POST   | `/v1/lookup/batch`                         | Bulk version of `/lookup`.                             |
+| GET    | `/v1/addresses/{source}/{registry_id}`     | Look up a single address by `kod_adm` or `ogc_fid`.    |
+| GET    | `/v1/reverse?country=&lat=&lon=&radius_m=` | Nearest addresses to a coordinate.                     |
+| GET    | `/v1/search?country=&q=&limit=`            | Fuzzy autocomplete via `pg_trgm` on `search_label`. Tolerates typos and out-of-order tokens; ranks by similarity. |
+| GET    | `/v1/meta`                                 | Row counts and last-refresh timestamps.                |
+| GET    | `/v1/health`                               | Liveness + DB ping.                                    |
+
+### Response shape
+
+Every match has a normalised envelope:
+
+```jsonc
+{
+  "registry_ref": "11855321",          // kod_adm (CZ) or ogc_fid (HR), as string
+  "source": "cz",                      // "cz" or "hr"
+  "street": "Karlova",
+  "house_number": "248/19",
+  "city": "Aš",
+  "postal_code": "35201",
+  "geometry": {                        // GeoJSON Point in WGS84
+    "type": "Point",
+    "coordinates": [10.4513, 50.9894]  // [lon, lat]
+  },
+  "distance_m": null,                  // metres; only set by /reverse
+  "score": null,                       // 0–1; only set by /search (pg_trgm word similarity)
+  "raw": null                          // populated only when ?include=raw
+}
+```
+
+`/search` returns matches sorted by `score` descending. Clients can apply a
+threshold (e.g. ignore matches with `score < 0.5`) if they want to suppress
+weak hits.
+
+### Optional payload extensions (`?include=…`)
+
+By default each match returns a normalised envelope (registry_ref, source,
+street, house_number, city, postal_code, geometry). Pass a comma-separated
+`?include=` parameter to request additional fields:
+
+- `?include=raw` — adds a `raw` dict containing the native source columns
+  (`kod_adm`, `obec_nazev`, `momc_nazev`, …, `kucni_broj`, `naselje`, …)
+  so consumers that need granular fields don't lose them.
+
+This is forward-compatible: future additions (e.g. `geometry_native`) plug
+in without breaking the URL contract.
+
+### Authentication
+
+Requests are gated by an optional `X-API-Key` header:
+
+- If `API_KEYS` is empty (default), all requests pass — useful for dev.
+- If `API_KEYS=watcher-crm:abc,watcher-nms:def`, the header must match one
+  of the listed values verbatim.
+
+### Examples
+
+```bash
+# Structured lookup, CZ — replicates the 5-variant fallback ladder server-side
+curl -X POST http://localhost:8000/v1/lookup \
+     -H 'Content-Type: application/json' \
+     -d '{
+           "country": "cz",
+           "street": "Karlova",
+           "number": "12/3",
+           "city": "Praha",
+           "postal_code": "11000"
+         }'
+
+# Reverse geocoding near Prague Castle
+curl 'http://localhost:8000/v1/reverse?country=cz&lat=50.090&lon=14.401&radius_m=200&limit=5'
+
+# Fuzzy autocomplete (HR) — finds "Stjepana Ivičevića 7, Makarska" even with
+# misspelt city; ranked by similarity score
+curl 'http://localhost:8000/v1/search?country=hr&q=Stjepana%20Ivi%C4%8Devi%C4%87a%207%20Makarska&limit=5'
+
+# Same in CZ — typing "Buřany 33" finds the address by part-of-municipality
+curl 'http://localhost:8000/v1/search?country=cz&q=Bu%C5%99any%2033&limit=5'
+```
+
+### Existing-database setup
+
+The `addresses_api` read-only role is created automatically on the **first**
+PostGIS startup by `db/init/01-api-role.sh`. If you already have a populated
+`postgis_data` volume from before this API service existed, run the SQL
+manually as the DB superuser (`POSTGRES_USER`):
+
+```sql
+CREATE ROLE addresses_api LOGIN PASSWORD '<API_DB_PASSWORD>';
+GRANT USAGE ON SCHEMA public TO addresses_api;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO addresses_api;
+ALTER DEFAULT PRIVILEGES FOR ROLE <POSTGRES_USER> IN SCHEMA public
+    GRANT SELECT ON TABLES TO addresses_api;
+```
+
+PostgreSQL extensions (`postgis`, `pg_trgm`) and the `search_label` columns
+are ensured/created by the importer on every run, so simply re-running the
+importer after upgrading is enough to populate them on an existing DB.
 
 ## Operations
 
@@ -179,16 +334,28 @@ Requires `gdal-bin` on the host (provides `ogr2ogr`).
 
 ```
 .
-├── Dockerfile                       # Importer image (Ubuntu + GDAL + Python)
-├── compose.production.yaml          # Production stack (postgis + importer)
+├── compose.production.yaml          # Production stack (postgis + importer + api)
 ├── .env.example                     # Configuration template
 ├── importer/
+│   ├── Dockerfile                   # Importer image (Ubuntu + GDAL + Python)
 │   ├── db.py                        # Shared connection helpers
 │   ├── scheduler.py                 # Monthly cron-like daemon
 │   ├── import_cz_csv.py             # RUIAN CSV importer (parallel COPY + atomic swap)
 │   ├── import_hr_wfs.py             # DGU WFS importer (ogr2ogr + atomic swap)
 │   ├── requirements.txt
 │   └── archive/                     # Earlier import implementations, kept for reference
+├── api/
+│   ├── Dockerfile                   # Lightweight API image (python:slim)
+│   ├── main.py                      # FastAPI app + lifespan
+│   ├── routes.py                    # All v1 endpoints
+│   ├── queries.py                   # SQL templates + CZ fallback ladder
+│   ├── models.py                    # Pydantic request/response models
+│   ├── db.py                        # Async psycopg pool
+│   ├── settings.py                  # Env-driven config
+│   └── requirements.txt
+├── db/
+│   └── init/
+│       └── 01-api-role.sh           # Creates the read-only addresses_api role
 └── LICENSE.md
 ```
 

@@ -6,8 +6,12 @@ services:
       POSTGRES_USER:     ${POSTGRES_USER:-addresses}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgis}
       POSTGRES_DB:       ${POSTGRES_DB:-addresses}
+      # Used by db/init/01-api-role.sh on first init; safe to leave unset.
+      API_DB_PASSWORD:   ${API_DB_PASSWORD:-}
     volumes:
       - postgis_data:/var/lib/postgresql
+      # Init scripts run only when the data directory is empty (first start).
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     # Uncomment to expose the DB to the host (psql, DBeaver, QGIS, …):
     # ports:
     #   - "5432:5432"
@@ -22,6 +26,7 @@ services:
   addresses_importer:
     build:
       context: .
+      dockerfile: importer/Dockerfile
     image: geo-addresses-importer
     restart: unless-stopped
     depends_on:
@@ -34,12 +39,35 @@ services:
       # Scheduler config — see importer/scheduler.py for details.
       # Default: 5th of every month at 03:00 (gives CUZK a margin to publish
       # the monthly RUIAN dump, which lands ~1st-3rd of each month).
-      SCHEDULE_DAY: "5"
-      SCHEDULE_HOUR: "3"
-      SCHEDULE_MINUTE: "0"
+      SCHEDULE_DAY:    "${SCHEDULE_DAY:-5}"
+      SCHEDULE_HOUR:   "${SCHEDULE_HOUR:-3}"
+      SCHEDULE_MINUTE: "${SCHEDULE_MINUTE:-0}"
       # Set to "1" only for first-time bootstrap; otherwise restarts would
       # trigger an unneeded full re-import every time.
-      RUN_ON_START: "0"
+      RUN_ON_START:    "${RUN_ON_START:-0}"
+      # Parallel COPY workers in the CZ importer (one CSV file per worker).
+      RUIAN_WORKERS:   "${RUIAN_WORKERS:-4}"
+
+  addresses_api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: geo-addresses-api
+    restart: unless-stopped
+    depends_on:
+      postgis:
+        condition: service_healthy
+    environment:
+      # Read-only role created by db/init/01-api-role.sh.
+      PG_CONN_API: "host=postgis user=addresses_api dbname=${POSTGRES_DB:-addresses} password=${API_DB_PASSWORD:-apipassword}"
+      # Comma-separated allowlist of API keys checked against the X-API-Key
+      # header. Empty = open access (dev). Set to a real list in production.
+      API_KEYS:      "${API_KEYS:-}"
+      PG_POOL_MIN:   "${PG_POOL_MIN:-2}"
+      PG_POOL_MAX:   "${PG_POOL_MAX:-10}"
+      CACHE_MAX_AGE: "${CACHE_MAX_AGE:-3600}"
+    ports:
+      - "${API_PORT:-8000}:8000"
 
 volumes:
   postgis_data:
@@ -47,3 +75,7 @@ volumes:
 # One-shot manual runs (bypassing the scheduler):
 #   docker compose -f compose.production.yaml run --rm addresses_importer python3 -m importer.import_cz_csv
 #   docker compose -f compose.production.yaml run --rm addresses_importer python3 -m importer.import_hr_wfs
+#
+# API docs are auto-served by FastAPI:
+#   http://localhost:8000/docs       (Swagger UI)
+#   http://localhost:8000/openapi.json
