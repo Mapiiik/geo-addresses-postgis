@@ -3,9 +3,10 @@
 Endpoints:
     POST /v1/lookup                          structured lookup w/ CZ fallback ladder
     POST /v1/lookup/batch                    bulk variant of /lookup
-    GET  /v1/addresses/{source}/{registry_id}  by-id lookup
+    GET  /v1/addresses/{source}/{registry_id}  single by-id lookup
+    POST /v1/addresses/batch                 bulk by-id lookup (mixed CZ + HR)
     GET  /v1/reverse                         nearest address to coords
-    GET  /v1/search                          autocomplete (ILIKE prefix)
+    GET  /v1/search                          fuzzy autocomplete (pg_trgm)
     GET  /v1/meta                            dataset metadata
     GET  /v1/health                          DB connectivity check
 
@@ -19,6 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query, Response
 from api import db, queries
 from api.models import (
     AddressMatch,
+    BatchByIdItem,
+    BatchByIdRequest,
+    BatchByIdResponse,
     BatchLookupRequest,
     BatchLookupResponse,
     Country,
@@ -169,6 +173,57 @@ async def address_by_id(
         raise HTTPException(status_code=404, detail=f"{source.upper()} address {registry_id} not found.")
     response.headers["Cache-Control"] = f"public, max-age={CACHE_MAX_AGE}"
     return _row_to_match(row, source, inc)
+
+
+@router.post(
+    "/addresses/batch",
+    response_model=BatchByIdResponse,
+    dependencies=[Depends(require_api_key)],
+    summary=(
+        "Bulk by-id lookup. Single roundtrip for many ids — and across "
+        "both sources in one request."
+    ),
+)
+async def addresses_batch(
+    req: BatchByIdRequest, include: str | None = Query(None)
+) -> BatchByIdResponse:
+    inc = parse_include(include)
+    raw_wanted = "raw" in inc
+
+    # Split + dedupe ids per source so the SQL receives at most one entry
+    # per id even if the caller asked for it multiple times.
+    cz_ids = sorted({i.registry_id for i in req.items if i.source == "cz"})
+    hr_ids = sorted({i.registry_id for i in req.items if i.source == "hr"})
+
+    matches: list[AddressMatch] = []
+    found_cz: set[int] = set()
+    found_hr: set[int] = set()
+
+    async with db.get_conn() as conn:
+        if cz_ids:
+            for row in await queries.cz_by_ids(conn, cz_ids):
+                matches.append(queries.cz_row_to_match(row, raw_wanted))
+                found_cz.add(row["kod_adm"])
+        if hr_ids:
+            for row in await queries.hr_by_ids(conn, hr_ids):
+                matches.append(queries.hr_row_to_match(row, raw_wanted))
+                found_hr.add(row["ogc_fid"])
+
+    # Preserve caller-supplied order for not_found, but dedupe — duplicate
+    # entries in the request should not yield duplicate misses in the response.
+    not_found: list[BatchByIdItem] = []
+    seen: set[tuple[Country, int]] = set()
+    for item in req.items:
+        key = (item.source, item.registry_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        if item.source == "cz" and item.registry_id not in found_cz:
+            not_found.append(item)
+        elif item.source == "hr" and item.registry_id not in found_hr:
+            not_found.append(item)
+
+    return BatchByIdResponse(matches=matches, not_found=not_found)
 
 
 # ---------------------------------------------------------------------------

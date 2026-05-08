@@ -224,6 +224,26 @@ async def hr_by_id(conn: AsyncConnection, ogc_fid: int) -> dict | None:
         return await cur.fetchone()
 
 
+async def cz_by_ids(conn: AsyncConnection, kod_adms: list[int]) -> list[dict]:
+    """Bulk by-id lookup for CZ. psycopg adapts the Python list to a Postgres
+    array, so `= ANY(%s)` performs a single index lookup over the set."""
+    if not kod_adms:
+        return []
+    sql = f"SELECT {CZ_COLUMNS} FROM cz_addresses WHERE kod_adm = ANY(%s)"
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(sql, (kod_adms,))
+        return await cur.fetchall()
+
+
+async def hr_by_ids(conn: AsyncConnection, ogc_fids: list[int]) -> list[dict]:
+    if not ogc_fids:
+        return []
+    sql = f"SELECT {HR_COLUMNS} FROM hr_addresses WHERE ogc_fid = ANY(%s)"
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(sql, (ogc_fids,))
+        return await cur.fetchall()
+
+
 async def cz_reverse(
     conn: AsyncConnection, lon: float, lat: float, radius_m: float, limit: int
 ) -> list[dict]:

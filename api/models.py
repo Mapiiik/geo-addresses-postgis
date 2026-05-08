@@ -85,6 +85,26 @@ class BatchLookupResponse(BaseModel):
     results: list[LookupResponse]
 
 
+class BatchByIdItem(BaseModel):
+    """One entry in a /v1/addresses/batch request — a (source, id) pair."""
+
+    source: Country
+    registry_id: int
+
+
+class BatchByIdRequest(BaseModel):
+    items: list[BatchByIdItem]
+
+
+class BatchByIdResponse(BaseModel):
+    matches: list[AddressMatch] = Field(
+        description="Found addresses, in arbitrary order. Mix of CZ + HR if both were requested.",
+    )
+    not_found: list[BatchByIdItem] = Field(
+        description="Items from the request that did not match anything in the DB.",
+    )
+
+
 class DatasetMeta(BaseModel):
     table: str
     row_count: int
