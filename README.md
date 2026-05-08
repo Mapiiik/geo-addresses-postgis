@@ -98,7 +98,8 @@ All configuration is via environment variables, set in `.env` (see
 | `POSTGRES_USER`     | `addresses`   | postgis service | DB superuser created on first start                           |
 | `POSTGRES_PASSWORD` | `postgis`     | postgis service | DB password — **change before deploying anywhere reachable**  |
 | `POSTGRES_DB`       | `addresses`   | postgis service | Database name                                                 |
-| `API_DB_PASSWORD`   | `apipassword` | postgis + API   | Password for the read-only `addresses_api` role               |
+| `API_DB_USER`       | `addresses_api` | postgis + API | Username of the read-only DB role created for the API         |
+| `API_DB_PASSWORD`   | `apipassword` | postgis + API   | Password for the read-only API role                           |
 | `API_KEYS`          | (empty)       | API             | Comma-separated allowlist of `X-API-Key` values; empty = open |
 | `API_PORT`          | `8000`        | API             | Host port the API is exposed on                               |
 | `PG_POOL_MIN`       | `2`           | API             | Minimum connections in the API's psycopg pool                 |
@@ -263,17 +264,18 @@ curl 'http://localhost:8000/v1/search?country=cz&q=Bu%C5%99any%2033&limit=5'
 
 ### Existing-database setup
 
-The `addresses_api` read-only role is created automatically on the **first**
-PostGIS startup by `db/init/01-api-role.sh`. If you already have a populated
-`postgis_data` volume from before this API service existed, run the SQL
-manually as the DB superuser (`POSTGRES_USER`):
+The read-only API role (default name `addresses_api`, configurable via
+`API_DB_USER`) is created automatically on the **first** PostGIS startup
+by `db/init/01-api-role.sh`. If you already have a populated `postgis_data`
+volume from before this API service existed, run the SQL manually as the
+DB superuser (`POSTGRES_USER`), substituting your actual values:
 
 ```sql
-CREATE ROLE addresses_api LOGIN PASSWORD '<API_DB_PASSWORD>';
-GRANT USAGE ON SCHEMA public TO addresses_api;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO addresses_api;
-ALTER DEFAULT PRIVILEGES FOR ROLE <POSTGRES_USER> IN SCHEMA public
-    GRANT SELECT ON TABLES TO addresses_api;
+CREATE ROLE "<API_DB_USER>" LOGIN PASSWORD '<API_DB_PASSWORD>';
+GRANT USAGE ON SCHEMA public TO "<API_DB_USER>";
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO "<API_DB_USER>";
+ALTER DEFAULT PRIVILEGES FOR ROLE "<POSTGRES_USER>" IN SCHEMA public
+    GRANT SELECT ON TABLES TO "<API_DB_USER>";
 ```
 
 PostgreSQL extensions (`postgis`, `pg_trgm`) and the `search_label` columns

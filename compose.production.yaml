@@ -7,6 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgis}
       POSTGRES_DB:       ${POSTGRES_DB:-addresses}
       # Used by db/init/01-api-role.sh on first init; safe to leave unset.
+      API_DB_USER:       ${API_DB_USER:-addresses_api}
       API_DB_PASSWORD:   ${API_DB_PASSWORD:-}
     volumes:
       - postgis_data:/var/lib/postgresql
@@ -59,7 +60,7 @@ services:
         condition: service_healthy
     environment:
       # Read-only role created by db/init/01-api-role.sh.
-      PG_CONN_API: "host=postgis user=addresses_api dbname=${POSTGRES_DB:-addresses} password=${API_DB_PASSWORD:-apipassword}"
+      PG_CONN_API: "host=postgis user=${API_DB_USER:-addresses_api} dbname=${POSTGRES_DB:-addresses} password=${API_DB_PASSWORD:-apipassword}"
       # Comma-separated allowlist of API keys checked against the X-API-Key
       # header. Empty = open access (dev). Set to a real list in production.
       API_KEYS:      "${API_KEYS:-}"

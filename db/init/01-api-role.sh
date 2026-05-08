@@ -5,27 +5,31 @@
 # run the equivalent SQL manually — see README.md.
 set -euo pipefail
 
+API_DB_USER="${API_DB_USER:-addresses_api}"
+
 if [ -z "${API_DB_PASSWORD:-}" ]; then
-  echo "WARN: API_DB_PASSWORD is not set; skipping addresses_api role creation."
+  echo "WARN: API_DB_PASSWORD is not set; skipping ${API_DB_USER} role creation."
   exit 0
 fi
 
+# Identifiers are quoted with "" in SQL to handle role names with mixed case
+# or special characters; password is a string literal in single quotes.
 psql -v ON_ERROR_STOP=1 \
      --username "$POSTGRES_USER" \
      --dbname  "$POSTGRES_DB" <<EOSQL
 DO \$\$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'addresses_api') THEN
-        CREATE ROLE addresses_api LOGIN PASSWORD '${API_DB_PASSWORD}';
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${API_DB_USER}') THEN
+        CREATE ROLE "${API_DB_USER}" LOGIN PASSWORD '${API_DB_PASSWORD}';
     END IF;
 END
 \$\$;
 
-GRANT USAGE ON SCHEMA public TO addresses_api;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO addresses_api;
+GRANT USAGE ON SCHEMA public TO "${API_DB_USER}";
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO "${API_DB_USER}";
 
 -- Future tables (importer's _new working tables become the live tables after
--- the atomic swap) automatically grant SELECT to addresses_api too.
-ALTER DEFAULT PRIVILEGES FOR ROLE ${POSTGRES_USER} IN SCHEMA public
-    GRANT SELECT ON TABLES TO addresses_api;
+-- the atomic swap) automatically grant SELECT to the API role too.
+ALTER DEFAULT PRIVILEGES FOR ROLE "${POSTGRES_USER}" IN SCHEMA public
+    GRANT SELECT ON TABLES TO "${API_DB_USER}";
 EOSQL
