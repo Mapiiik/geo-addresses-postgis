@@ -28,7 +28,6 @@ services:
     build:
       context: .
       dockerfile: importer/Dockerfile
-    image: geo-addresses-importer
     restart: unless-stopped
     depends_on:
       postgis:
@@ -53,7 +52,6 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
-    image: geo-addresses-api
     restart: unless-stopped
     depends_on:
       postgis:
