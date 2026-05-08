@@ -205,10 +205,15 @@ def materialize_new_table():
     The live cz_addresses table is untouched during this step.
 
     Notes on coordinates:
-      - In the CSV, JTSK (EPSG:5514) coordinates are stored as positive values,
-        but the actual JTSK values are negative — hence -x, -y.
-      - The CSV column order is (Y, X), so staging.y / staging.x match the
-        file header names, not the argument order of ST_MakePoint.
+      - The CSV column order is (Y, X), so the staging table also stores
+        them as (y, x) — column name matches the CSV header.
+      - RUIAN publishes the values as positive numbers, but the actual
+        S-JTSK values are negative. We negate both before building the
+        geometry.
+      - EPSG:5514 (S-JTSK / Křovák East-North) expects axis order
+        (easting, northing). After negation, `-y` is the easting and
+        `-x` is the northing — hence ST_MakePoint(-y, -x), NOT (-x, -y).
+        Getting the order wrong shifts results by hundreds of kilometres.
 
     The search_label column is built per Czech vyhláška 359/2011 Sb. § 6
     (rules for composing an address from RUIAN). It powers fuzzy matching
@@ -228,8 +233,8 @@ def materialize_new_table():
             cislo_domovni, cislo_orientacni, cislo_orientacni_znak,
             psc,
             plati_od,
-            ST_SetSRID(ST_MakePoint(-x, -y), 5514)                       AS geometry_jtsk,
-            ST_Transform(ST_SetSRID(ST_MakePoint(-x, -y), 5514), 4326)   AS geometry,
+            ST_SetSRID(ST_MakePoint(-y, -x), 5514)                       AS geometry_jtsk,
+            ST_Transform(ST_SetSRID(ST_MakePoint(-y, -x), 5514), 4326)   AS geometry,
             -- search_label per vyhláška 359/2011 Sb., příloha 1 (vzory 1–6).
             -- Lokátor = ulice OR cast_obce (when ≠ obec); fallback to "č.p."
             -- prefix only when neither is shown. "č.ev." is always present
