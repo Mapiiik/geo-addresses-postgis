@@ -29,34 +29,45 @@ via the bundled REST API service.
   (composed per Czech vyhláška 359/2011 Sb. for CZ; "ulica kucni_broj,
   postanski_broj naselje" for HR), indexed with a `pg_trgm` GIN index.
   Tolerates typos, partial words, and out-of-order tokens.
+- **Automatic HTTPS** — bundled Caddy reverse proxy auto-fetches a
+  Let's Encrypt certificate when `DOMAIN` is a public hostname, or
+  uses an internal CA for local dev. No manual cert management.
 - **Self-contained Docker stack** — `compose.production.yaml` spins up
-  PostGIS + the importer + the API with one command.
+  PostGIS + the importer + the API + Caddy with one command.
 
 ## Architecture
 
 ```
-                          ┌────────────────────────┐
-   HTTP clients  ─────────►   addresses_api         │
-                          │   (FastAPI, port 8000) │
-                          └────────────┬───────────┘
-                                       │ read-only role
-                                       ▼
+                       ┌──────────────────────────┐
+   HTTPS clients ──────►   caddy                   │  ports 80 / 443
+                       │   automatic Let's Encrypt │  cert state in
+                       │   (or internal-CA for     │  caddy_data volume
+                       │    localhost)             │
+                       └─────────────┬────────────┘
+                                     ▼
+                       ┌────────────────────────┐
+                       │   addresses_api         │  port 8000 closed by
+                       │   (FastAPI)             │  default; only Caddy
+                       └────────────┬───────────┘  reaches it internally
+                                    │ read-only role
+                                    ▼
 ┌────────────────────────┐        ┌──────────────────────────┐
 │  postgis  (PostGIS 18) │◄──────►│  addresses_importer       │
-│                         │        │  • importer.scheduler    │
-│  cz_addresses           │        │    (monthly cron loop)   │
-│  hr_addresses           │        │  • import_cz_csv         │
-│  postgis_data (volume)  │        │  • import_hr_wfs         │
+│                        │        │  • importer.scheduler    │
+│  cz_addresses          │        │    (monthly cron loop)   │
+│  hr_addresses          │        │  • import_cz_csv         │
+│  postgis_data (volume) │        │  • import_hr_wfs         │
 └────────────────────────┘        └──────────────────────────┘
                                           │
-                                          ├── HTTP → vdp.cuzk.cz (CZ)
-                                          └── WFS  → geoportal.dgu.hr (HR)
+                                          ├── HTTPS → vdp.cuzk.cz (CZ)
+                                          └── WFS   → geoportal.dgu.hr (HR)
 ```
 
-All three services share the default Compose network; the importer and API
-reach the DB by service name (`host=postgis`). The API uses a read-only
-`addresses_api` role with `SELECT`-only privileges — it cannot modify data
-or interfere with the importer's atomic-swap.
+All four services share the default Compose network; the importer and API
+reach the DB by service name (`host=postgis`), Caddy reaches the API at
+`http://addresses_api:8000`. The API uses a read-only DB role (default
+name `addresses_api`, see `API_DB_USER`) with `SELECT`-only privileges —
+it cannot modify data or interfere with the importer's atomic-swap.
 
 ## Quick start
 
@@ -101,7 +112,10 @@ All configuration is via environment variables, set in `.env` (see
 | `API_DB_USER`       | `addresses_api` | postgis + API | Username of the read-only DB role created for the API         |
 | `API_DB_PASSWORD`   | `apipassword` | postgis + API   | Password for the read-only API role                           |
 | `API_KEYS`          | (empty)       | API             | Comma-separated allowlist of `X-API-Key` values; empty = open |
-| `API_PORT`          | `8000`        | API             | Host port the API is exposed on                               |
+| `API_PORT`          | `8000`        | API + caddy     | Port the API listens on; Caddy proxies to it on the compose network. Not published to the host by default — uncomment the `ports:` block in `compose.production.yaml` to expose it for direct HTTP debugging. |
+| `SERVER_NAME`       | `localhost`   | caddy           | Hostname(s) Caddy serves; `localhost` → internal CA, real name → Let's Encrypt. Space-separated for SAN. |
+| `HTTP_PORT`         | `80`          | caddy           | Host port for plain HTTP. **Must stay `80` for Let's Encrypt** (ACME HTTP-01 challenge); override only in dev. |
+| `HTTPS_PORT`        | `443`         | caddy           | Host port for HTTPS. **Must stay `443` for Let's Encrypt** (TLS-ALPN-01 challenge); override only in dev. |
 | `PG_POOL_MIN`       | `2`           | API             | Minimum connections in the API's psycopg pool                 |
 | `PG_POOL_MAX`       | `10`          | API             | Maximum connections in the API's psycopg pool                 |
 | `CACHE_MAX_AGE`     | `3600`        | API             | Default `Cache-Control: max-age` (seconds) on cacheable GETs  |
@@ -262,6 +276,36 @@ curl 'http://localhost:8000/v1/search?country=hr&q=Stjepana%20Ivi%C4%8Devi%C4%87
 curl 'http://localhost:8000/v1/search?country=cz&q=Bu%C5%99any%2033&limit=5'
 ```
 
+### HTTPS / TLS
+
+The bundled `caddy` service provides automatic HTTPS in front of the API.
+Behaviour is controlled by `SERVER_NAME`:
+
+| `SERVER_NAME`          | Behaviour                                                     |
+|------------------------|---------------------------------------------------------------|
+| `localhost` (default)  | Caddy issues a cert from its **internal CA**. Browsers warn unless you install Caddy's root cert; good for dev. |
+| Real public hostname   | Caddy auto-fetches a **Let's Encrypt** cert via ACME and renews it transparently. Requires ports 80 + 443 reachable from the public internet, with DNS pointing here. |
+
+`SERVER_NAME` also accepts multiple space-separated hostnames (e.g.
+`"example.com www.example.com"`) — Caddy issues a single SAN cert
+covering all of them.
+
+Cert state is persisted in the `caddy_data` named volume so renewals
+survive container rebuilds.
+
+By default the `addresses_api` container does **not** publish port 8000
+to the host — all external traffic must go through Caddy on 80/443. This
+ensures HTTPS, API-key auth, and any future rate-limiting can't be
+bypassed by hitting the API directly. To expose the API on plain HTTP for
+debugging, uncomment the `ports:` block in
+[compose.production.yaml](compose.production.yaml). For ad-hoc poking
+without re-exposing the port:
+
+```bash
+docker compose -f compose.production.yaml exec addresses_api \
+    curl -s http://localhost:8000/v1/health
+```
+
 ### Existing-database setup
 
 The read-only API role (default name `addresses_api`, configurable via
@@ -357,7 +401,9 @@ Requires `gdal-bin` on the host (provides `ogr2ogr`).
 │   └── requirements.txt
 ├── db/
 │   └── init/
-│       └── 01-api-role.sh           # Creates the read-only addresses_api role
+│       └── 01-api-role.sh           # Creates the read-only API DB role
+├── caddy/
+│   └── Caddyfile                    # Reverse proxy + automatic HTTPS config
 └── LICENSE.md
 ```
 

@@ -1,0 +1,21 @@
+# Caddy reverse proxy with automatic HTTPS in front of addresses_api.
+#
+# Behaviour depends on the SERVER_NAME env var:
+#   • SERVER_NAME=localhost (default) — Caddy issues a cert from its
+#     internal CA. Browsers will warn unless you install Caddy's root
+#     cert into your trust store. Good for dev.
+#
+#   • SERVER_NAME=<real public hostname> — Caddy auto-fetches a
+#     Let's Encrypt cert via ACME and renews it transparently. Requires
+#     ports 80 + 443 reachable from the public internet, with DNS
+#     pointing the hostname here.
+#
+# SERVER_NAME also accepts multiple space-separated hostnames, e.g.
+# "example.com www.example.com" — Caddy issues a single SAN cert for all.
+#
+# Cert state is persisted in the caddy_data named volume so renewals
+# survive container rebuilds.
+
+{$SERVER_NAME:localhost} {
+    reverse_proxy addresses_api:{$API_PORT:8000}
+}
