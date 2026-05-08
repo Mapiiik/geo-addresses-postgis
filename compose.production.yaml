@@ -1,0 +1,49 @@
+services:
+  postgis:
+    image: postgis/postgis:18-3.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-addresses}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgis}
+      POSTGRES_DB:       ${POSTGRES_DB:-addresses}
+    volumes:
+      - postgis_data:/var/lib/postgresql
+    # Uncomment to expose the DB to the host (psql, DBeaver, QGIS, …):
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-addresses} -d ${POSTGRES_DB:-addresses}
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  addresses_importer:
+    build:
+      context: .
+    image: geo-addresses-importer
+    restart: unless-stopped
+    depends_on:
+      postgis:
+        condition: service_healthy
+    environment:
+      # Compose constructs the libpq connection string from POSTGRES_* in .env,
+      # so credentials only have to be defined once.
+      PG_CONN_ADDRESSES: "host=postgis user=${POSTGRES_USER:-addresses} dbname=${POSTGRES_DB:-addresses} password=${POSTGRES_PASSWORD:-postgis}"
+      # Scheduler config — see importer/scheduler.py for details.
+      # Default: 5th of every month at 03:00 (gives CUZK a margin to publish
+      # the monthly RUIAN dump, which lands ~1st-3rd of each month).
+      SCHEDULE_DAY: "5"
+      SCHEDULE_HOUR: "3"
+      SCHEDULE_MINUTE: "0"
+      # Set to "1" only for first-time bootstrap; otherwise restarts would
+      # trigger an unneeded full re-import every time.
+      RUN_ON_START: "0"
+
+volumes:
+  postgis_data:
+
+# One-shot manual runs (bypassing the scheduler):
+#   docker compose -f compose.production.yaml run --rm addresses_importer python3 -m importer.import_cz_csv
+#   docker compose -f compose.production.yaml run --rm addresses_importer python3 -m importer.import_hr_wfs
