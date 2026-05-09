@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query, Response
 
 from api import db, queries
 from api.models import (
+    SUPPORTED_COUNTRIES,
     AddressMatch,
     BatchByIdItem,
     BatchByIdRequest,
@@ -284,7 +285,11 @@ async def search(
 # Meta + health
 # ---------------------------------------------------------------------------
 
-@router.get("/meta", response_model=MetaResponse, summary="Dataset row counts and freshness.")
+@router.get(
+    "/meta",
+    response_model=MetaResponse,
+    summary="Supported countries, dataset row counts, and last-refresh timestamps.",
+)
 async def meta(response: Response) -> MetaResponse:
     async with db.get_conn() as conn:
         cz = await queries.dataset_meta(conn, "cz_addresses")
@@ -292,6 +297,7 @@ async def meta(response: Response) -> MetaResponse:
     response.headers["Cache-Control"] = "public, max-age=300"
     return MetaResponse(
         api_version="v1",
+        supported_countries=SUPPORTED_COUNTRIES,
         datasets=[
             DatasetMeta(table="cz_addresses", **cz),
             DatasetMeta(table="hr_addresses", **hr),

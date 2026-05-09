@@ -202,7 +202,7 @@ Once the stack is up, browse the auto-generated docs at:
 | POST   | `/v1/addresses/batch`                      | Bulk by-id lookup; mix CZ + HR ids in one request. Returns matches + the items that didn't resolve. |
 | GET    | `/v1/reverse?country=&lat=&lon=&radius_m=` | Nearest addresses to a coordinate.                     |
 | GET    | `/v1/search?country=&q=&limit=`            | Fuzzy autocomplete via `pg_trgm` on `search_label`. Tolerates typos and out-of-order tokens; ranks by similarity. |
-| GET    | `/v1/meta`                                 | Row counts and last-refresh timestamps.                |
+| GET    | `/v1/meta`                                 | Supported countries, dataset row counts, and last-refresh timestamps. |
 | GET    | `/v1/health`                               | Liveness + DB ping.                                    |
 
 ### Response shape

@@ -1,11 +1,17 @@
 """Pydantic models for request bodies and response payloads."""
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field
 
 Country = Literal["cz", "hr"]
 NumberType = Literal["house", "registration"]
+
+# Single source of truth for which country codes the API accepts. Derived from
+# the Country Literal via typing.get_args, so adding a new country is a single
+# edit to the Literal above — this list and the /v1/meta response update
+# automatically.
+SUPPORTED_COUNTRIES: list[str] = list(get_args(Country))
 
 
 class Geometry(BaseModel):
@@ -120,6 +126,14 @@ class DatasetMeta(BaseModel):
 
 class MetaResponse(BaseModel):
     api_version: str
+    supported_countries: list[str] = Field(
+        description=(
+            "ISO 3166-1 alpha-2 lowercase codes of the countries this API "
+            "instance can serve (i.e. has a loaded dataset for). Use this "
+            "to drive UI dropdowns and validation in clients without "
+            "hardcoding the list."
+        ),
+    )
     datasets: list[DatasetMeta]
 
 
