@@ -167,6 +167,14 @@ def create_indexes(table_name):
         CREATE INDEX hr_addr_new_geometry_htrs96_idx
             ON {working_table} USING GIST (geometry_htrs96);
 
+        -- inspire_id is the stable HR address identifier (DGU INSPIRE format,
+        -- e.g. "HR.DGU.RPJ:KB.0000021409"). Unlike ogc_fid — which ogr2ogr
+        -- reassigns on every import — inspire_id is anchored in the source
+        -- data and survives reimports. The API uses it as registry_ref, so
+        -- a fast UNIQUE lookup is mandatory.
+        CREATE UNIQUE INDEX hr_addr_new_inspire_id_idx
+            ON {working_table} (inspire_id);
+
         -- Attribute indexes (btree)
         CREATE INDEX hr_addr_new_street_idx     ON {working_table} (ulica);
         CREATE INDEX hr_addr_new_house_idx      ON {working_table} (kucni_broj);
@@ -213,6 +221,7 @@ def atomic_swap(table_name):
 
         ALTER INDEX hr_addr_new_geometry_idx          RENAME TO hr_addr_geometry_idx;
         ALTER INDEX hr_addr_new_geometry_htrs96_idx   RENAME TO hr_addr_geometry_htrs96_idx;
+        ALTER INDEX hr_addr_new_inspire_id_idx        RENAME TO hr_addr_inspire_id_idx;
         ALTER INDEX hr_addr_new_street_idx            RENAME TO hr_addr_street_idx;
         ALTER INDEX hr_addr_new_house_idx             RENAME TO hr_addr_house_idx;
         ALTER INDEX hr_addr_new_settlement_idx        RENAME TO hr_addr_settlement_idx;

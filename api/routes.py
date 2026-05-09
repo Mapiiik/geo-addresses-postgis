@@ -155,21 +155,31 @@ async def lookup_batch(
     "/addresses/{source}/{registry_id}",
     response_model=AddressMatch,
     dependencies=[Depends(require_api_key)],
-    summary="Look up a single address by its registry id (CZ kod_adm or HR ogc_fid).",
+    summary=(
+        "Look up a single address by its stable registry id. "
+        "CZ uses numeric kod_adm; HR uses the full INSPIRE id "
+        "(e.g. 'HR.DGU.RPJ:KB.0000021409')."
+    ),
 )
 async def address_by_id(
     source: Country,
-    registry_id: int,
+    registry_id: str,
     response: Response,
     include: str | None = Query(None),
 ) -> AddressMatch:
     inc = parse_include(include)
     async with db.get_conn() as conn:
-        row = (
-            await queries.cz_by_id(conn, registry_id)
-            if source == "cz"
-            else await queries.hr_by_id(conn, registry_id)
-        )
+        if source == "cz":
+            try:
+                kod_adm = int(registry_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail="CZ registry_id must be numeric (kod_adm).",
+                )
+            row = await queries.cz_by_id(conn, kod_adm)
+        else:
+            row = await queries.hr_by_id(conn, registry_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"{source.upper()} address {registry_id} not found.")
     response.headers["Cache-Control"] = f"public, max-age={CACHE_MAX_AGE}"
@@ -191,29 +201,38 @@ async def addresses_batch(
     inc = parse_include(include)
     raw_wanted = "raw" in inc
 
-    # Split + dedupe ids per source so the SQL receives at most one entry
-    # per id even if the caller asked for it multiple times.
-    cz_ids = sorted({i.registry_id for i in req.items if i.source == "cz"})
-    hr_ids = sorted({i.registry_id for i in req.items if i.source == "hr"})
+    # Split + dedupe ids per source. CZ ids cast to int (kod_adm column type);
+    # HR ids stay as strings (inspire_id is text). Validation raises 422 if a
+    # CZ id is non-numeric.
+    try:
+        cz_ids: list[int] = sorted({int(i.registry_id) for i in req.items if i.source == "cz"})
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="All CZ registry_id values must be numeric (kod_adm).",
+        )
+    hr_ids: list[str] = sorted({i.registry_id for i in req.items if i.source == "hr"})
 
     matches: list[AddressMatch] = []
-    found_cz: set[int] = set()
-    found_hr: set[int] = set()
+    # Sets keep the same string type as the request, so membership checks
+    # below match transparently across sources.
+    found_cz: set[str] = set()
+    found_hr: set[str] = set()
 
     async with db.get_conn() as conn:
         if cz_ids:
             for row in await queries.cz_by_ids(conn, cz_ids):
                 matches.append(queries.cz_row_to_match(row, raw_wanted))
-                found_cz.add(row["kod_adm"])
+                found_cz.add(str(row["kod_adm"]))
         if hr_ids:
             for row in await queries.hr_by_ids(conn, hr_ids):
                 matches.append(queries.hr_row_to_match(row, raw_wanted))
-                found_hr.add(row["ogc_fid"])
+                found_hr.add(row["inspire_id"])
 
     # Preserve caller-supplied order for not_found, but dedupe — duplicate
     # entries in the request should not yield duplicate misses in the response.
     not_found: list[BatchByIdItem] = []
-    seen: set[tuple[Country, int]] = set()
+    seen: set[tuple[Country, str]] = set()
     for item in req.items:
         key = (item.source, item.registry_id)
         if key in seen:

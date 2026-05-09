@@ -198,7 +198,7 @@ Once the stack is up, browse the auto-generated docs at:
 |--------|--------------------------------------------|--------------------------------------------------------|
 | POST   | `/v1/lookup`                               | Structured lookup. CZ runs a 5-variant fallback ladder.|
 | POST   | `/v1/lookup/batch`                         | Bulk version of `/lookup`.                             |
-| GET    | `/v1/addresses/{source}/{registry_id}`     | Look up a single address by `kod_adm` or `ogc_fid`.    |
+| GET    | `/v1/addresses/{source}/{registry_id}`     | Look up a single address by its **stable** registry id. CZ uses numeric `kod_adm` (e.g. `11855321`); HR uses the full INSPIRE id (e.g. `HR.DGU.RPJ:KB.0000021409`). |
 | POST   | `/v1/addresses/batch`                      | Bulk by-id lookup; mix CZ + HR ids in one request. Returns matches + the items that didn't resolve. |
 | GET    | `/v1/reverse?country=&lat=&lon=&radius_m=` | Nearest addresses to a coordinate.                     |
 | GET    | `/v1/search?country=&q=&limit=`            | Fuzzy autocomplete via `pg_trgm` on `search_label`. Tolerates typos and out-of-order tokens; ranks by similarity. |

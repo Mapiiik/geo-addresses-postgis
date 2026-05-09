@@ -28,7 +28,13 @@ CZ_COLUMNS = """
 """
 
 HR_COLUMNS = """
-    ogc_fid, ulica, kucni_broj, naselje, postanski_broj,
+    inspire_id, ogc_fid, gml_id, zgrada_id,
+    kucni_broj, broj, podbroja_alfa, podbroj_num, rotacija,
+    ulica, ulica_id, ulica_redni_broj,
+    naselje, naselje_id,
+    postanski_ured, postanski_ured_id, postanski_broj,
+    katastarska_opcina, katastarska_opcina_id,
+    broj_cestice, ostale_vezane_cestice,
     ST_X(geometry) AS lon,
     ST_Y(geometry) AS lat
 """
@@ -160,7 +166,10 @@ def hr_row_to_match(row: dict[str, Any], include_raw: bool) -> AddressMatch:
     if include_raw:
         raw = {k: v for k, v in row.items() if k not in ("lon", "lat", "_score")}
     return AddressMatch(
-        registry_ref=str(row["ogc_fid"]),
+        # Use inspire_id (e.g. "HR.DGU.RPJ:KB.0000021409") rather than ogc_fid
+        # — ogc_fid is reassigned by ogr2ogr on every import, inspire_id is
+        # the stable DGU identifier anchored in the source data.
+        registry_ref=row["inspire_id"],
         source="hr",
         street=_str_or_none(row.get("ulica")),
         house_number=_str_or_none(row.get("kucni_broj")),
@@ -217,10 +226,10 @@ async def cz_by_id(conn: AsyncConnection, kod_adm: int) -> dict | None:
         return await cur.fetchone()
 
 
-async def hr_by_id(conn: AsyncConnection, ogc_fid: int) -> dict | None:
-    sql = f"SELECT {HR_COLUMNS} FROM hr_addresses WHERE ogc_fid = %s"
+async def hr_by_id(conn: AsyncConnection, inspire_id: str) -> dict | None:
+    sql = f"SELECT {HR_COLUMNS} FROM hr_addresses WHERE inspire_id = %s"
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(sql, (ogc_fid,))
+        await cur.execute(sql, (inspire_id,))
         return await cur.fetchone()
 
 
@@ -235,12 +244,12 @@ async def cz_by_ids(conn: AsyncConnection, kod_adms: list[int]) -> list[dict]:
         return await cur.fetchall()
 
 
-async def hr_by_ids(conn: AsyncConnection, ogc_fids: list[int]) -> list[dict]:
-    if not ogc_fids:
+async def hr_by_ids(conn: AsyncConnection, inspire_ids: list[str]) -> list[dict]:
+    if not inspire_ids:
         return []
-    sql = f"SELECT {HR_COLUMNS} FROM hr_addresses WHERE ogc_fid = ANY(%s)"
+    sql = f"SELECT {HR_COLUMNS} FROM hr_addresses WHERE inspire_id = ANY(%s)"
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(sql, (ogc_fids,))
+        await cur.execute(sql, (inspire_ids,))
         return await cur.fetchall()
 
 

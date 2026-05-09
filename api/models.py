@@ -92,10 +92,17 @@ class BatchLookupResponse(BaseModel):
 
 
 class BatchByIdItem(BaseModel):
-    """One entry in a /v1/addresses/batch request — a (source, id) pair."""
+    """One entry in a /v1/addresses/batch request — a (source, id) pair.
+
+    `registry_id` is a string because identifier shape varies per source:
+      - CZ: numeric kod_adm, e.g. "11855321"
+      - HR: full INSPIRE id, e.g. "HR.DGU.RPJ:KB.0000021409"
+    Pydantic coerces incoming JSON numbers to strings transparently, so a
+    caller may pass `12345` or `"12345"` for CZ — both end up as "12345".
+    """
 
     source: Country
-    registry_id: int
+    registry_id: str
 
 
 class BatchByIdRequest(BaseModel):
