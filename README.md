@@ -25,10 +25,12 @@ via the bundled REST API service.
 - **REST API** — FastAPI service with structured lookup (incl. CZ fallback
   ladder), by-id, reverse geocoding, fuzzy autocomplete, and dataset metadata.
   Auto-generated OpenAPI / Swagger docs at `/docs`.
-- **Fuzzy search** — every address has a precomputed `search_label`
+- **Fuzzy search** — every address has a precomputed `formatted_address`
   (composed per Czech vyhláška 359/2011 Sb. for CZ; "ulica kucni_broj,
-  postanski_broj naselje" for HR), indexed with a `pg_trgm` GIN index.
-  Tolerates typos, partial words, and out-of-order tokens.
+  postanski_broj naselje" for HR), indexed with a functional `pg_trgm`
+  GIN index on `lower(formatted_address)`. Tolerates typos, partial words,
+  and out-of-order tokens. The same column doubles as the display label
+  in API responses.
 - **Automatic HTTPS** — bundled Caddy reverse proxy auto-fetches a
   Let's Encrypt certificate when `DOMAIN` is a public hostname, or
   uses an internal CA for local dev. No manual cert management.
@@ -152,10 +154,10 @@ After a successful import, the live tables are:
 | `plati_od`              | `date`                  | Valid from                     |
 | `geometry_jtsk`         | `geometry(Point, 5514)` | Native S-JTSK / Křovák         |
 | `geometry`              | `geometry(Point, 4326)` | WGS84                          |
-| `search_label`          | `text`                  | Lowercased formatted address per vyhláška 359/2011 Sb., used by `/v1/search` |
+| `formatted_address`     | `text`                  | Display-ready address per vyhláška 359/2011 Sb. Doubles as the search column via a functional GIN trigram index on `lower(formatted_address)`. |
 
 Indexes: GIST on both geometry columns, btree on `obec_nazev`, `ulice_nazev`,
-`psc`, GIN trigram (`gin_trgm_ops`) on `search_label`.
+`psc`, GIN trigram (`gin_trgm_ops`) on `lower(formatted_address)`.
 
 ### `hr_addresses`
 
@@ -165,10 +167,10 @@ INSPIRE-flavoured schema as delivered by the DGU WFS. Key columns include
 
 - `geometry_htrs96` — `geometry(Point, 3765)` (native HTRS96 / TM)
 - `geometry`        — `geometry(Point, 4326)` (WGS84, generated column)
-- `search_label`    — `text` (lowercased "ulica kucni_broj, postanski_broj naselje", generated column)
+- `formatted_address` — `text` ("ulica kucni_broj, postanski_broj naselje", generated column; also drives search via functional GIN index)
 
 Indexes: GIST on both geometries, btree on the four attribute columns above,
-GIN trigram on `search_label`.
+GIN trigram on `lower(formatted_address)`.
 
 ### Required PostgreSQL extensions
 
@@ -201,7 +203,7 @@ Once the stack is up, browse the auto-generated docs at:
 | GET    | `/v1/addresses/{source}/{registry_id}`     | Look up a single address by its **stable** registry id. CZ uses numeric `kod_adm` (e.g. `11855321`); HR uses the full INSPIRE id (e.g. `HR.DGU.RPJ:KB.0000021409`). |
 | POST   | `/v1/addresses/batch`                      | Bulk by-id lookup; mix CZ + HR ids in one request. Returns matches + the items that didn't resolve. |
 | GET    | `/v1/reverse?country=&lat=&lon=&radius_m=` | Nearest addresses to a coordinate.                     |
-| GET    | `/v1/search?country=&q=&limit=`            | Fuzzy autocomplete via `pg_trgm` on `search_label`. Tolerates typos and out-of-order tokens; ranks by similarity. |
+| GET    | `/v1/search?country=&q=&limit=`            | Fuzzy autocomplete via `pg_trgm` on `lower(formatted_address)`. Tolerates typos and out-of-order tokens; ranks by similarity. |
 | GET    | `/v1/meta`                                 | Supported countries, dataset row counts, and last-refresh timestamps. |
 | GET    | `/v1/health`                               | Liveness + DB ping.                                    |
 
@@ -323,7 +325,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "<POSTGRES_USER>" IN SCHEMA public
     GRANT SELECT ON TABLES TO "<API_DB_USER>";
 ```
 
-PostgreSQL extensions (`postgis`, `pg_trgm`) and the `search_label` columns
+PostgreSQL extensions (`postgis`, `pg_trgm`) and the `formatted_address` columns
 are ensured/created by the importer on every run, so simply re-running the
 importer after upgrading is enough to populate them on an existing DB.
 

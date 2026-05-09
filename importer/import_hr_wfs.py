@@ -120,31 +120,30 @@ def validate_import(table_name):
         )
 
 def add_derived_columns(table_name):
-    """Add WGS84 geometry and search_label as STORED generated columns.
+    """Add WGS84 geometry and formatted_address as STORED generated columns.
 
     Both are computed once per row at write time and persisted on disk —
     no separate UPDATE pass. Done as a single ALTER TABLE so PostgreSQL
     only rewrites the table once for both columns combined.
 
-    search_label is a lowercased "ulica kucni_broj, postanski_broj naselje"
-    composite — feeds the pg_trgm GIN index used by /v1/search for fuzzy
-    matching (typo tolerance, partial / out-of-order matches).
+    formatted_address is a proper-case display label
+    "ulica kucni_broj, postanski_broj naselje". The same column also feeds
+    the pg_trgm GIN index used by /v1/search via a functional index on
+    lower(formatted_address), so we don't need a duplicated lowercase column.
     """
     working_table = f"{table_name}_new"
-    print(f"Adding WGS84 geometry and search_label as generated columns…")
+    print(f"Adding WGS84 geometry and formatted_address as generated columns…")
     run_sql(f"""
         ALTER TABLE {working_table}
             ADD COLUMN geometry geometry(Point, {WGS84_SRID})
                 GENERATED ALWAYS AS (ST_Transform(geometry_htrs96, {WGS84_SRID})) STORED,
-            ADD COLUMN search_label text
+            ADD COLUMN formatted_address text
                 GENERATED ALWAYS AS (
-                    lower(
-                        COALESCE(ulica || ' ', '')
-                        || COALESCE(kucni_broj::text, '')
-                        || ', '
-                        || COALESCE(postanski_broj::text || ' ', '')
-                        || COALESCE(naselje, '')
-                    )
+                    COALESCE(ulica || ' ', '')
+                    || COALESCE(kucni_broj::text, '')
+                    || ', '
+                    || COALESCE(postanski_broj::text || ' ', '')
+                    || COALESCE(naselje, '')
                 ) STORED;
     """)
 
@@ -181,9 +180,11 @@ def create_indexes(table_name):
         CREATE INDEX hr_addr_new_settlement_idx ON {working_table} (naselje);
         CREATE INDEX hr_addr_new_postcode_idx   ON {working_table} (postanski_broj);
 
-        -- pg_trgm GIN index powers fuzzy search on the API /v1/search endpoint.
+        -- pg_trgm GIN index on lower(formatted_address) powers fuzzy search
+        -- on the API /v1/search endpoint. Functional index lets one stored
+        -- column serve both the display label and case-insensitive search.
         CREATE INDEX hr_addr_new_search_trgm_idx
-            ON {working_table} USING GIN (search_label gin_trgm_ops);
+            ON {working_table} USING GIN (lower(formatted_address) gin_trgm_ops);
     """)
 
 

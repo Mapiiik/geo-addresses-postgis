@@ -215,11 +215,13 @@ def materialize_new_table():
         `-x` is the northing — hence ST_MakePoint(-y, -x), NOT (-x, -y).
         Getting the order wrong shifts results by hundreds of kilometres.
 
-    The search_label column is built per Czech vyhláška 359/2011 Sb. § 6
-    (rules for composing an address from RUIAN). It powers fuzzy matching
-    on the API /v1/search endpoint — see queries.py / pg_trgm GIN index.
+    The formatted_address column is built per Czech vyhláška 359/2011 Sb. § 6
+    (rules for composing an address from RUIAN). It is both display-ready
+    (proper case) and the basis of fuzzy search — the trigram GIN index is
+    built on lower(formatted_address), so a single stored column powers both
+    /v1/search and the formatted_address response field.
     """
-    print("Materializing cz_addresses_new with geometry and search_label…")
+    print("Materializing cz_addresses_new with geometry and formatted_address…")
     run_sql("""
         CREATE TABLE cz_addresses_new AS
         SELECT
@@ -235,42 +237,43 @@ def materialize_new_table():
             plati_od,
             ST_SetSRID(ST_MakePoint(-y, -x), 5514)                       AS geometry_jtsk,
             ST_Transform(ST_SetSRID(ST_MakePoint(-y, -x), 5514), 4326)   AS geometry,
-            -- search_label per vyhláška 359/2011 Sb., příloha 1 (vzory 1–6).
+            -- formatted_address per vyhláška 359/2011 Sb., příloha 1 (vzory 1–6).
             -- Lokátor = ulice OR cast_obce (when ≠ obec); fallback to "č.p."
             -- prefix only when neither is shown. "č.ev." is always present
             -- before evidence numbers. cast_obce on its own line only when
             -- a street is also shown AND it differs from obec. Praha gets
             -- mop_nazev (e.g. "Praha 6") instead of plain obec_nazev.
-            lower(
-                COALESCE(
-                    NULLIF(ulice_nazev, '') || ' ',
-                    CASE WHEN cast_obce_nazev IS NOT NULL
-                              AND cast_obce_nazev <> obec_nazev
-                         THEN cast_obce_nazev || ' ' END,
-                    ''
-                )
-                || CASE
-                     WHEN typ_so = 'č.ev.' THEN 'č.ev. '
-                     WHEN NULLIF(ulice_nazev, '') IS NULL
-                          AND (cast_obce_nazev IS NULL
-                               OR cast_obce_nazev = obec_nazev)
-                       THEN 'č.p. '
-                     ELSE ''
-                   END
-                || COALESCE(cislo_domovni::text, '')
-                || COALESCE('/' || cislo_orientacni::text, '')
-                || COALESCE(cislo_orientacni_znak, '')
-                || CASE WHEN NULLIF(ulice_nazev, '') IS NOT NULL
-                             AND cast_obce_nazev IS NOT NULL
-                             AND cast_obce_nazev <> obec_nazev
-                        THEN ', ' || cast_obce_nazev
-                        ELSE '' END
-                || ', '
-                || COALESCE(psc::text || ' ', '')
-                || CASE WHEN obec_nazev = 'Praha' AND mop_nazev IS NOT NULL
-                        THEN mop_nazev
-                        ELSE obec_nazev END
-            ) AS search_label
+            -- Stored proper-case; the search GIN trigram index is built on
+            -- lower(formatted_address) so we don't need a duplicated column.
+            COALESCE(
+                NULLIF(ulice_nazev, '') || ' ',
+                CASE WHEN cast_obce_nazev IS NOT NULL
+                          AND cast_obce_nazev <> obec_nazev
+                     THEN cast_obce_nazev || ' ' END,
+                ''
+            )
+            || CASE
+                 WHEN typ_so = 'č.ev.' THEN 'č.ev. '
+                 WHEN NULLIF(ulice_nazev, '') IS NULL
+                      AND (cast_obce_nazev IS NULL
+                           OR cast_obce_nazev = obec_nazev)
+                   THEN 'č.p. '
+                 ELSE ''
+               END
+            || COALESCE(cislo_domovni::text, '')
+            || COALESCE('/' || cislo_orientacni::text, '')
+            || COALESCE(cislo_orientacni_znak, '')
+            || CASE WHEN NULLIF(ulice_nazev, '') IS NOT NULL
+                         AND cast_obce_nazev IS NOT NULL
+                         AND cast_obce_nazev <> obec_nazev
+                    THEN ', ' || cast_obce_nazev
+                    ELSE '' END
+            || ', '
+            || COALESCE(psc::text || ' ', '')
+            || CASE WHEN obec_nazev = 'Praha' AND mop_nazev IS NOT NULL
+                    THEN mop_nazev
+                    ELSE obec_nazev END
+            AS formatted_address
         FROM cz_addresses_staging
         WHERE x IS NOT NULL AND y IS NOT NULL;
 
@@ -296,9 +299,11 @@ def create_indexes_on_new():
         CREATE INDEX cz_addr_new_street_idx         ON cz_addresses_new (ulice_nazev);
         CREATE INDEX cz_addr_new_city_idx           ON cz_addresses_new (obec_nazev);
         CREATE INDEX cz_addr_new_psc_idx            ON cz_addresses_new (psc);
-        -- pg_trgm GIN index powers fuzzy search on the API /v1/search endpoint.
+        -- pg_trgm GIN index on lower(formatted_address) powers fuzzy search
+        -- on the API /v1/search endpoint. Functional index lets one stored
+        -- column serve both the display label and the case-insensitive search.
         CREATE INDEX cz_addr_new_search_trgm_idx
-            ON cz_addresses_new USING GIN (search_label gin_trgm_ops);
+            ON cz_addresses_new USING GIN (lower(formatted_address) gin_trgm_ops);
     """)
 
 

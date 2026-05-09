@@ -29,8 +29,26 @@ class AddressMatch(BaseModel):
     source: Country
     street: str | None = None
     house_number: str | None = None
+    number_type: NumberType | None = Field(
+        default=None,
+        description=(
+            "Type of house number. 'registration' is CZ-specific (č.ev.); all "
+            "other addresses default to 'house' — including HR DGU and any "
+            "other source that doesn't distinguish. Null only when no number "
+            "is present at all (rare)."
+        ),
+    )
     city: str | None = None
     postal_code: str | None = None
+    formatted_address: str | None = Field(
+        default=None,
+        description=(
+            "Display-ready address in the country's national format. CZ follows "
+            "vyhláška 359/2011 Sb. § 6 (e.g. 'Studentská 1903/14a, Dejvice, "
+            "16000 Praha 6'); HR uses 'ulica kucni_broj, postanski_broj naselje'. "
+            "Splitting on ', ' yields 2-3 lines depending on the address kind."
+        ),
+    )
     geometry: Geometry
     distance_m: float | None = Field(
         default=None,

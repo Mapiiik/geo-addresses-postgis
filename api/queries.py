@@ -23,6 +23,7 @@ CZ_COLUMNS = """
     ulice_kod, ulice_nazev, typ_so,
     cislo_domovni, cislo_orientacni, cislo_orientacni_znak,
     psc, plati_od,
+    formatted_address,
     ST_X(geometry) AS lon,
     ST_Y(geometry) AS lat
 """
@@ -35,6 +36,7 @@ HR_COLUMNS = """
     postanski_ured, postanski_ured_id, postanski_broj,
     katastarska_opcina, katastarska_opcina_id,
     broj_cestice, ostale_vezane_cestice,
+    formatted_address,
     ST_X(geometry) AS lon,
     ST_Y(geometry) AS lat
 """
@@ -133,6 +135,15 @@ def _cz_house_number_str(row: dict[str, Any]) -> str | None:
     return "".join(parts)
 
 
+def _cz_number_type(typ_so: str | None) -> str | None:
+    """Map RUIAN typ_so column to the API's number_type enum value."""
+    if typ_so == "č.ev.":
+        return "registration"
+    if typ_so == "č.p.":
+        return "house"
+    return None
+
+
 def cz_row_to_match(row: dict[str, Any], include_raw: bool) -> AddressMatch:
     raw = None
     if include_raw:
@@ -144,8 +155,10 @@ def cz_row_to_match(row: dict[str, Any], include_raw: bool) -> AddressMatch:
         source="cz",
         street=row.get("ulice_nazev"),
         house_number=_cz_house_number_str(row),
+        number_type=_cz_number_type(row.get("typ_so")),
         city=row.get("obec_nazev"),
         postal_code=str(row["psc"]) if row.get("psc") is not None else None,
+        formatted_address=row.get("formatted_address"),
         geometry=Geometry(coordinates=(row["lon"], row["lat"])),
         distance_m=row.get("distance_m"),
         score=row.get("_score"),
@@ -173,8 +186,14 @@ def hr_row_to_match(row: dict[str, Any], include_raw: bool) -> AddressMatch:
         source="hr",
         street=_str_or_none(row.get("ulica")),
         house_number=_str_or_none(row.get("kucni_broj")),
+        # DGU does not distinguish house vs. registration numbers like CZ
+        # does (č.p. / č.ev.). Default to "house" since semantically that's
+        # what kucni_broj is — keeps the field non-null for clients that
+        # don't want to special-case sources without the distinction.
+        number_type="house",
         city=_str_or_none(row.get("naselje")),
         postal_code=_str_or_none(row.get("postanski_broj")),
+        formatted_address=_str_or_none(row.get("formatted_address")),
         geometry=Geometry(coordinates=(row["lon"], row["lat"])),
         distance_m=row.get("distance_m"),
         score=row.get("_score"),
@@ -313,16 +332,17 @@ async def _trgm_search(
     Tokens can appear in any order; minor typos are tolerated; the result
     is ranked by `word_similarity` score so the best hit comes first.
     """
-    # search_label is stored lowercased; lowercase the query to match.
+    # formatted_address is stored proper-case; lowercase both sides for the
+    # case-insensitive trigram match. The functional GIN index on
+    # lower(formatted_address) is what the planner uses for the <% lookup.
     q_lower = q.lower().strip()
 
     sql = f"""
         SELECT {columns},
-               word_similarity(%(q)s, search_label) AS _score,
-               search_label
+               word_similarity(%(q)s, lower(formatted_address)) AS _score
         FROM {table}
-        WHERE %(q)s <%% search_label
-        ORDER BY _score DESC, search_label
+        WHERE %(q)s <%% lower(formatted_address)
+        ORDER BY _score DESC, formatted_address
         LIMIT %(limit)s
     """
     async with conn.cursor(row_factory=dict_row) as cur:
