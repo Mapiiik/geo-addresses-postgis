@@ -353,6 +353,28 @@ docker compose -f compose.production.yaml run --rm addresses_importer \
 The DB port is not exposed to the host by default. To enable, uncomment the
 `ports:` block in `compose.production.yaml` and `docker compose up -d` again.
 
+### Local customisation (`compose.yaml` override)
+
+If `compose.production.yaml` doesn't fit your environment — e.g. you
+want to drop the bundled PostGIS service and point at a host-side
+PostGIS instance you already run, change ports, mount different
+volumes, or add extra services — copy it once and tweak the copy:
+
+```bash
+cp compose.production.yaml compose.yaml
+# edit compose.yaml however you like
+docker compose up -d
+```
+
+`compose.yaml` is in `.gitignore` (along with `.env`), so it never
+travels through `git pull` and your local layout is preserved across
+upstream updates. `docker compose` picks up `compose.yaml` by default
+when no `-f` flag is given, so commands stay short.
+
+This is the recommended pattern for any deviation from the shipped
+defaults — leave `compose.production.yaml` alone as a clean reference,
+diverge in `compose.yaml`.
+
 ### Updating
 
 ```bash
@@ -360,6 +382,9 @@ git pull
 docker compose -f compose.production.yaml build
 docker compose -f compose.production.yaml up -d
 ```
+
+(Or just `docker compose build && docker compose up -d` if you have a
+local `compose.yaml` per the section above.)
 
 The PostGIS data volume (`postgis_data`) survives rebuilds.
 
