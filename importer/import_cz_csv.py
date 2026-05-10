@@ -242,7 +242,9 @@ def materialize_new_table():
             -- prefix only when neither is shown. "č.ev." is always present
             -- before evidence numbers. cast_obce on its own line only when
             -- a street is also shown AND it differs from obec. Praha gets
-            -- mop_nazev (e.g. "Praha 6") instead of plain obec_nazev.
+            -- mop_nazev (e.g. "Praha 6") instead of plain obec_nazev — and
+            -- since mop_nazev is only populated for Praha addresses in
+            -- RUIAN, COALESCE(mop_nazev, obec_nazev) cleanly covers both.
             -- Stored proper-case; the search GIN trigram index is built on
             -- lower(formatted_address) so we don't need a duplicated column.
             COALESCE(
@@ -270,9 +272,7 @@ def materialize_new_table():
                     ELSE '' END
             || ', '
             || COALESCE(psc::text || ' ', '')
-            || CASE WHEN obec_nazev = 'Praha' AND mop_nazev IS NOT NULL
-                    THEN mop_nazev
-                    ELSE obec_nazev END
+            || COALESCE(mop_nazev, obec_nazev)
             AS formatted_address
         FROM cz_addresses_staging
         WHERE x IS NOT NULL AND y IS NOT NULL;

@@ -27,7 +27,16 @@ class AddressMatch(BaseModel):
 
     registry_ref: str = Field(description="Source-specific stable id (RUIAN kod_adm or DGU ogc_fid)")
     source: Country
-    street: str | None = None
+    street: str | None = Field(
+        default=None,
+        description=(
+            "Line-1 locator. Typically the street name. For CZ village "
+            "addresses without a street (vyhláška 359/2011 Sb. § 6 vzor 5) "
+            "it falls back to part-of-municipality (cast_obce_nazev) — what "
+            "users write on an envelope. Null only for the rare 'č.p. "
+            "<num>, <obec>' case (vzor 6) where neither exists."
+        ),
+    )
     house_number: str | None = None
     number_type: NumberType | None = Field(
         default=None,
@@ -38,7 +47,15 @@ class AddressMatch(BaseModel):
             "is present at all (rare)."
         ),
     )
-    city: str | None = None
+    city: str | None = Field(
+        default=None,
+        description=(
+            "Postal city / settlement. For Praha this is the district "
+            "(e.g. 'Praha 6', from mop_nazev) so it matches what users "
+            "write on envelopes and into CRM forms; for other CZ addresses "
+            "and for HR it is the plain municipality / settlement name."
+        ),
+    )
     postal_code: str | None = None
     formatted_address: str | None = Field(
         default=None,

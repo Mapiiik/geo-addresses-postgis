@@ -150,13 +150,29 @@ def cz_row_to_match(row: dict[str, Any], include_raw: bool) -> AddressMatch:
         # Drop helper columns from ST_X/ST_Y and the search _score (latter is
         # computed at query time, not a real DB column); keep the rest verbatim.
         raw = {k: v for k, v in row.items() if k not in ("lon", "lat", "_score")}
+
+    # Line-1 locator per vyhláška 359/2011 Sb.: ulice_nazev when present,
+    # otherwise cast_obce_nazev for village addresses without streets (vzor
+    # 5). Mirrors the formatted_address composition. Stays null only for
+    # vzor 6 ("č.p. <num>, <obec>") where neither exists.
+    street = row.get("ulice_nazev")
+    if not street:
+        cast_obce = row.get("cast_obce_nazev")
+        if cast_obce and cast_obce != row.get("obec_nazev"):
+            street = cast_obce
+
+    # Postal city per vyhláška § 6 (2) c): for Praha the district number is
+    # appended ("Praha 6") via mop_nazev; for other obce mop_nazev is NULL
+    # and obec_nazev is the city. Single COALESCE covers both.
+    city = row.get("mop_nazev") or row.get("obec_nazev")
+
     return AddressMatch(
         registry_ref=str(row["kod_adm"]),
         source="cz",
-        street=row.get("ulice_nazev"),
+        street=street,
         house_number=_cz_house_number_str(row),
         number_type=_cz_number_type(row.get("typ_so")),
-        city=row.get("obec_nazev"),
+        city=city,
         postal_code=str(row["psc"]) if row.get("psc") is not None else None,
         formatted_address=row.get("formatted_address"),
         geometry=Geometry(coordinates=(row["lon"], row["lat"])),
