@@ -28,9 +28,10 @@ via the bundled REST API service.
 - **Fuzzy search** — every address has a precomputed `formatted_address`
   (composed per Czech vyhláška 359/2011 Sb. for CZ; "ulica kucni_broj,
   postanski_broj naselje" for HR), indexed with a functional `pg_trgm`
-  GIN index on `lower(formatted_address)`. Tolerates typos, partial words,
-  and out-of-order tokens. The same column doubles as the display label
-  in API responses.
+  GIN index on `lower(formatted_address)`. The query is matched token by
+  token: names tolerate typos, missing diacritics and partial words, house
+  numbers must match exactly, and tokens may come in any order. The same
+  column doubles as the display label in API responses.
 - **Automatic HTTPS** — bundled Caddy reverse proxy auto-fetches a
   Let's Encrypt certificate when `DOMAIN` is a public hostname, or
   uses an internal CA for local dev. No manual cert management.
@@ -203,7 +204,7 @@ Once the stack is up, browse the auto-generated docs at:
 | GET    | `/v1/addresses/{source}/{registry_id}`     | Look up a single address by its **stable** registry id. CZ uses numeric `kod_adm` (e.g. `11855321`); HR uses the full INSPIRE id (e.g. `HR.DGU.RPJ:KB.0000021409`). |
 | POST   | `/v1/addresses/batch`                      | Bulk by-id lookup; mix CZ + HR ids in one request. Returns matches + the items that didn't resolve. |
 | GET    | `/v1/reverse?country=&lat=&lon=&radius_m=` | Nearest addresses to a coordinate.                     |
-| GET    | `/v1/search?country=&q=&limit=`            | Fuzzy autocomplete via `pg_trgm` on `lower(formatted_address)`. Tolerates typos and out-of-order tokens; ranks by similarity. |
+| GET    | `/v1/search?country=&q=&limit=`            | Fuzzy autocomplete via `pg_trgm` on `lower(formatted_address)`. Every query token must be present; tolerates typos and out-of-order tokens; ranks by similarity. |
 | GET    | `/v1/meta`                                 | Supported countries, dataset row counts, and last-refresh timestamps. |
 | GET    | `/v1/health`                               | Liveness + DB ping.                                    |
 
@@ -224,14 +225,25 @@ Every match has a normalised envelope:
     "coordinates": [10.4513, 50.9894]  // [lon, lat]
   },
   "distance_m": null,                  // metres; only set by /reverse
-  "score": null,                       // 0–1; only set by /search (pg_trgm word similarity)
+  "score": null,                       // 0–1; only set by /search (mean per-token similarity)
   "raw": null                          // populated only when ?include=raw
 }
 ```
 
-`/search` returns matches sorted by `score` descending. Clients can apply a
+`/search` returns matches sorted by `score` descending — the mean `pg_trgm`
+similarity of the query's tokens against the matched address, so `1.0` means
+every token matched a word of the address verbatim. Clients can apply a
 threshold (e.g. ignore matches with `score < 0.5`) if they want to suppress
 weak hits.
+
+Matching is token-based: every token of the query has to be present in the
+address, in any order. Names are matched fuzzily (`Vysoke nad Jyzerou` still
+finds `Vysoké nad Jizerou`), but tokens containing a digit — house numbers,
+postcodes — must match a whole word exactly, since 367 is not "almost" 368.
+A letter suffix is still allowed, so `5` finds `5a`, and the halves of a CZ
+composite number are matched individually (`248` and `19` both find
+`248/19`). If no address covers every token, the search falls back to a loose
+whole-query match and returns its closest guesses instead of nothing.
 
 ### Optional payload extensions (`?include=…`)
 
@@ -277,6 +289,11 @@ curl 'http://localhost:8000/v1/search?country=hr&q=Stjepana%20Ivi%C4%8Devi%C4%87
 
 # Same in CZ — typing "Buřany 33" finds the address by part-of-municipality
 curl 'http://localhost:8000/v1/search?country=cz&q=Bu%C5%99any%2033&limit=5'
+
+# Municipality + house number, in either order — both return the single
+# address "Věnceslava Metelky 367, 51211 Vysoké nad Jizerou" with score 1.0
+curl 'http://localhost:8000/v1/search?country=cz&q=Vysok%C3%A9%20nad%20Jizerou%20367&limit=5'
+curl 'http://localhost:8000/v1/search?country=cz&q=367%20Vysok%C3%A9%20nad%20Jizerou&limit=5'
 ```
 
 ### HTTPS / TLS

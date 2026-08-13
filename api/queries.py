@@ -6,7 +6,7 @@ substitutions are between trusted constants (column lists, table names,
 fallback variant where-clauses).
 """
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -334,39 +334,180 @@ async def hr_reverse(
         return await cur.fetchall()
 
 
+# Split a query into search tokens. Everything that is not a letter, digit or
+# `/` separates tokens — `/` is kept so a CZ composite number ("248/19") stays
+# one token. Because the split only ever yields word characters and slashes,
+# tokens are safe to embed in a regex without escaping.
+_TOKEN_SPLIT_RE = re.compile(r"[^\w/]+", re.UNICODE)
+_HAS_DIGIT_RE = re.compile(r"\d")
+
+# Ranking uses the average per-token word similarity, so a token that is
+# absent from the label drags the score down. Ordering is stabilised by
+# preferring the shortest label among equal scores — the shortest label that
+# still contains every token is the least padded with unrelated words.
+_TIE_BREAK = "length(formatted_address), formatted_address"
+_ORDER_BY = f"_score DESC, {_TIE_BREAK}"
+
+
+class _TokenMatch(NamedTuple):
+    """The two WHERE variants and the scoring expression for one query."""
+
+    exact: str
+    fuzzy: str
+    score: str
+    params: dict[str, Any]
+
+
+def _token_match(tokens: list[str]) -> _TokenMatch | None:
+    """Build the per-token WHERE clauses and scoring expression.
+
+    Returns None when no token is usable, in which case the caller falls back
+    to the whole-query search.
+
+    Each token contributes one AND-ed condition, so *every* token has to be
+    present in the label — this is what makes "Vysoké nad Jizerou 367" find
+    the house rather than the village. Two variants are produced:
+
+    `exact` requires every token verbatim as a whole word, `fuzzy` allows
+    typos in the non-numeric ones. Per token:
+
+      * tokens containing a digit are matched literally in both variants, as
+        the whole word `~ '\\m<tok>[a-z]*\\M'`. House numbers are identifiers,
+        not prose — 367 is not "almost" 368 — and trigram similarity between
+        short numbers is meaningless. Anchoring both ends is what keeps "100"
+        off the postcode in "Ilica 45/1, 10000 Zagreb"; the trailing `[a-z]*`
+        still admits a letter suffix ("5" finds "5a"). Since `/` is not a word
+        character, "248" and "19" each still match the halves of "248/19".
+      * other tokens are matched with `%>>`, the *strict* word-similarity
+        operator, which still tolerates typos, missing diacritics and partial
+        words but aligns its comparison to whole words. Plain `%>` compares
+        against any extent of the label, word boundaries included, which is far
+        too loose for street names: it rates "karlova" against "křesomyslova"
+        at 0.375 — above threshold — purely on the shared "…slova" tail.
+      * single-character non-numeric tokens are dropped entirely: they carry
+        no trigram information and only come from noise like the "č.p." prefix.
+
+    All conditions run against `lower(formatted_address)`, so the functional
+    GIN trigram index serves them as a single bitmap AND.
+    """
+    exact: list[str] = []
+    fuzzy: list[str] = []
+    score: list[str] = []
+    params: dict[str, Any] = {}
+
+    for i, tok in enumerate(tokens):
+        key, word = f"t{i}", f"w{i}"
+        literal = f"lower(formatted_address) ~ %({word})s"
+        if _HAS_DIGIT_RE.search(tok):
+            params[word] = rf"\m{tok}[a-z]*\M"
+            exact.append(literal)
+            fuzzy.append(literal)
+        elif len(tok) >= 2:
+            params[word] = rf"\m{tok}\M"
+            exact.append(literal)
+            fuzzy.append(f"lower(formatted_address) %%>> %({key})s")
+        else:
+            continue
+        params[key] = tok
+        score.append(f"strict_word_similarity(%({key})s, lower(formatted_address))")
+
+    if not fuzzy:
+        return None
+    return _TokenMatch(
+        exact=" AND ".join(exact),
+        fuzzy=" AND ".join(fuzzy),
+        score=f"({' + '.join(score)}) / {len(score)}",
+        params=params,
+    )
+
+
 async def _trgm_search(
     conn: AsyncConnection, table: str, columns: str, q: str, limit: int
 ) -> list[dict]:
-    """Fuzzy autocomplete via pg_trgm against the precomputed `search_label`.
+    """Fuzzy autocomplete via pg_trgm against the precomputed
+    `formatted_address`, matched token by token.
 
-    Uses the `<%` (word similarity) operator + GIN trigram index built by
-    the importer. Word similarity finds the best-matching extent of the
-    label, which is exactly the autocomplete behaviour users expect:
-    typing "Stjepana" matches "stjepana ivičevića 1, makarska 21300"
-    even though only a small portion of the label aligns with the query.
+    Every query token must be present in the label, and the score is the mean
+    per-token similarity — so tokens the label does not cover cost it rank.
+    Scoring the query as one string does not work here: `word_similarity`
+    returns the best-matching *extent* of the label, so for "Vysoké nad Jizerou
+    367" the extent "vysoké nad jizerou" alone already scores 0.83 and every
+    address in the village ties at that value, leaving the house number with no
+    influence at all on the result order.
 
-    Tokens can appear in any order; minor typos are tolerated; the result
-    is ranked by `word_similarity` score so the best hit comes first.
+    The search runs in three tiers, stopping at the first that can answer:
+
+    1. every token verbatim as a whole word. Such a label scores 1.0 on every
+       token, so once this tier fills the page there is nothing a looser match
+       could add — and it is the tier that keeps broad queries cheap, since it
+       never evaluates a similarity function ("Praha 1" matches 161k labels:
+       264 ms here against 1.3 s of scoring in tier 2).
+    2. the same tokens, fuzzy on the non-numeric ones, ranked by score. This is
+       what absorbs typos, missing diacritics and half-typed words.
+    3. no label covers every token — a mistyped number, a word that is not part
+       of the address — so the whole query is matched loosely with `<%` and the
+       endpoint answers with its closest guesses rather than nothing.
     """
     # formatted_address is stored proper-case; lowercase both sides for the
     # case-insensitive trigram match. The functional GIN index on
-    # lower(formatted_address) is what the planner uses for the <% lookup.
+    # lower(formatted_address) is what the planner uses for the lookups.
     q_lower = q.lower().strip()
+    match = _token_match(_TOKEN_SPLIT_RE.split(q_lower))
 
-    sql = f"""
-        SELECT {columns},
-               word_similarity(%(q)s, lower(formatted_address)) AS _score
-        FROM {table}
-        WHERE %(q)s <%% lower(formatted_address)
-        ORDER BY _score DESC, formatted_address
-        LIMIT %(limit)s
-    """
     async with conn.cursor(row_factory=dict_row) as cur:
-        # SET LOCAL keeps the threshold change scoped to this transaction so
-        # other code paths reusing the pooled connection are unaffected.
-        # 0.3 is permissive enough for partial words and small typos.
+        # SET LOCAL keeps the threshold changes scoped to this transaction so
+        # other code paths reusing the pooled connection are unaffected. 0.3 is
+        # permissive enough for partial words and small typos in both tiers —
+        # the strict threshold drives the per-token pass, the plain one the
+        # whole-query fallback below.
+        await cur.execute(
+            "SET LOCAL pg_trgm.strict_word_similarity_threshold = 0.3"
+        )
         await cur.execute("SET LOCAL pg_trgm.word_similarity_threshold = 0.3")
-        await cur.execute(sql, {"q": q_lower, "limit": limit})
+
+        if match is not None:
+            await cur.execute(
+                f"""
+                SELECT {columns}, 1.0::float8 AS _score
+                FROM {table}
+                WHERE {match.exact}
+                ORDER BY {_TIE_BREAK}
+                LIMIT %(limit)s
+                """,
+                match.params | {"limit": limit},
+            )
+            rows = await cur.fetchall()
+            # A short page of exact hits is still worth re-running as tier 2:
+            # tier 1 is a subset of it, so nothing is lost and the remaining
+            # slots get filled with near misses.
+            if len(rows) >= limit:
+                return rows
+
+            await cur.execute(
+                f"""
+                SELECT {columns}, {match.score} AS _score
+                FROM {table}
+                WHERE {match.fuzzy}
+                ORDER BY {_ORDER_BY}
+                LIMIT %(limit)s
+                """,
+                match.params | {"limit": limit},
+            )
+            rows = await cur.fetchall()
+            if rows:
+                return rows
+
+        await cur.execute(
+            f"""
+            SELECT {columns},
+                   word_similarity(%(q)s, lower(formatted_address)) AS _score
+            FROM {table}
+            WHERE %(q)s <%% lower(formatted_address)
+            ORDER BY {_ORDER_BY}
+            LIMIT %(limit)s
+            """,
+            {"q": q_lower, "limit": limit},
+        )
         return await cur.fetchall()
 
 
