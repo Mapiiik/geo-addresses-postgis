@@ -1,4 +1,7 @@
 -r ../api/requirements.txt
+# The importers own the formatted_address SQL the tests assert on, so their
+# modules have to be importable too.
+-r ../importer/requirements.txt
 pytest==9.1.1
 pytest-asyncio==1.4.0
 # Drives the ASGI app in-process for the route tests; no server, no sockets.

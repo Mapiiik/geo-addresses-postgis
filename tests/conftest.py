@@ -34,10 +34,30 @@ TEST_PG_CONN = os.environ.get("TEST_PG_CONN")
 # The route tests never open the pool (they substitute db.get_conn), so the
 # value only has to exist.
 os.environ.setdefault("PG_CONN_API", TEST_PG_CONN or "host=localhost dbname=unused")
+# Same for the importer package, which the formatted_address tests import to
+# get at the SQL rather than restating it.
+os.environ.setdefault(
+    "PG_CONN_ADDRESSES", TEST_PG_CONN or "host=localhost dbname=unused"
+)
 
 requires_db = pytest.mark.skipif(
     not TEST_PG_CONN, reason="TEST_PG_CONN not set — skipping DB-backed tests"
 )
+
+
+def read_fixture(name: str) -> str:
+    """Load a fixture file, filling in the SQL the importers own.
+
+    hr_addresses computes formatted_address in a generated column, and the
+    fixture takes that expression straight from the importer rather than
+    restating it — a restated copy would keep passing while production started
+    composing labels differently, which is precisely the drift these tests are
+    supposed to notice.
+    """
+    from importer.import_hr_wfs import FORMATTED_ADDRESS_SQL
+
+    sql = (FIXTURES / name).read_text(encoding="utf-8")
+    return sql.replace("{hr_formatted_address}", FORMATTED_ADDRESS_SQL)
 
 
 @pytest_asyncio.fixture
@@ -57,8 +77,8 @@ async def seeded_conn():
         # public stays on the path so the fixtures can reach the postgis and
         # pg_trgm functions, but the test schema shadows it for table names.
         await conn.execute(f"SET search_path TO {TEST_SCHEMA}, public")
-        for name in ("schema.sql", "data.sql"):
-            await conn.execute((FIXTURES / name).read_text(encoding="utf-8"))
+        await conn.execute(read_fixture("schema.sql"))
+        await conn.execute(read_fixture("data.sql"))
         # queries.py relies on SET LOCAL, which needs a transaction; switching
         # autocommit off here makes the connection behave as it does under the
         # API's pool.

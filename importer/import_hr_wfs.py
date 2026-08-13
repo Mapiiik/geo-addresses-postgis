@@ -46,6 +46,19 @@ WGS84_SRID = 4326
 # almost certainly means a truncated WFS response, so we abort before the swap.
 MIN_EXPECTED_ROWS = 1_500_000
 
+# The display label, "ulica kucni_broj, postanski_broj naselje". Kept as a
+# named constant rather than inlined into the ALTER TABLE below so the tests
+# can apply the very expression that runs in production — the whole of
+# /v1/search is matched against its output, so a silent drift here would move
+# search behaviour without touching a line of api/.
+FORMATTED_ADDRESS_SQL = """
+                    COALESCE(ulica || ' ', '')
+                    || COALESCE(kucni_broj::text, '')
+                    || ', '
+                    || COALESCE(postanski_broj::text || ' ', '')
+                    || COALESCE(naselje, '')
+"""
+
 
 # ---------------------------------------------------------------------------
 # Import steps
@@ -138,13 +151,7 @@ def add_derived_columns(table_name):
             ADD COLUMN geometry geometry(Point, {WGS84_SRID})
                 GENERATED ALWAYS AS (ST_Transform(geometry_htrs96, {WGS84_SRID})) STORED,
             ADD COLUMN formatted_address text
-                GENERATED ALWAYS AS (
-                    COALESCE(ulica || ' ', '')
-                    || COALESCE(kucni_broj::text, '')
-                    || ', '
-                    || COALESCE(postanski_broj::text || ' ', '')
-                    || COALESCE(naselje, '')
-                ) STORED;
+                GENERATED ALWAYS AS ({FORMATTED_ADDRESS_SQL}) STORED;
     """)
 
 

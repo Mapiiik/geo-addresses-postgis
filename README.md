@@ -423,11 +423,12 @@ Requires `gdal-bin` on the host (provides `ogr2ogr`).
 
 ## Tests
 
-`tests/` covers the `/v1/search` ranking rules and the pure-Python parts of
-`api/queries.py`. The search assertions run against a real PostGIS seeded with
-a curated handful of genuine RUIAN / DGU rows — the behaviour being pinned down
-is `pg_trgm`'s (word similarity, thresholds, word boundaries), so it cannot be
-faked with mocks.
+`tests/` covers the API end to end — the `/v1/search` ranking rules, the CZ
+fallback ladder, every endpoint's status codes and response envelope, and the
+`formatted_address` composition the importers own. Most of it runs against a
+real PostGIS seeded with a curated handful of genuine RUIAN / DGU rows: the
+behaviour being pinned down is `pg_trgm`'s and the importers' SQL, so it cannot
+be faked with mocks.
 
 ```bash
 pip install -r tests/requirements.txt
@@ -486,9 +487,12 @@ container on every push and pull request, plus a build of both images — see
 ├── caddy/
 │   └── Caddyfile                    # Reverse proxy + automatic HTTPS config
 ├── tests/
-│   ├── conftest.py                  # Throwaway seeded schema on a real PostGIS
+│   ├── conftest.py                  # Throwaway seeded schema + in-process ASGI client
 │   ├── fixtures/                    # Table definitions + curated real addresses
 │   ├── test_search.py               # /v1/search ranking rules
+│   ├── test_lookup.py               # CZ fallback ladder, by-id, reverse, meta
+│   ├── test_routes.py               # Status codes, validation, response envelope
+│   ├── test_formatted_address.py    # Importer label composition (vyhláška vzory)
 │   ├── test_queries_unit.py         # Clause building + row → envelope mapping
 │   └── requirements.txt
 └── LICENSE.md

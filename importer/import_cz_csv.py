@@ -36,6 +36,48 @@ MAX_WORKERS = int(os.getenv("RUIAN_WORKERS", "4"))
 # How many months back to try if the current dump is not yet published
 MAX_MONTHS_FALLBACK = 3
 
+# formatted_address per vyhláška 359/2011 Sb., příloha 1 (vzory 1–6).
+# Lokátor = ulice OR cast_obce (when ≠ obec); fallback to "č.p." prefix only
+# when neither is shown. "č.ev." is always present before evidence numbers.
+# cast_obce on its own line only when a street is also shown AND it differs
+# from obec. Praha gets mop_nazev (e.g. "Praha 6") instead of plain obec_nazev
+# — and since mop_nazev is only populated for Praha addresses in RUIAN,
+# COALESCE(mop_nazev, obec_nazev) cleanly covers both. Stored proper-case; the
+# search GIN trigram index is built on lower(formatted_address) so we don't
+# need a duplicated column.
+#
+# Kept as a named constant rather than inlined below so the tests can apply the
+# very expression that runs in production instead of a copy of it that would
+# quietly drift — the whole of /v1/search is matched against its output.
+FORMATTED_ADDRESS_SQL = """
+            COALESCE(
+                NULLIF(ulice_nazev, '') || ' ',
+                CASE WHEN cast_obce_nazev IS NOT NULL
+                          AND cast_obce_nazev <> obec_nazev
+                     THEN cast_obce_nazev || ' ' END,
+                ''
+            )
+            || CASE
+                 WHEN typ_so = 'č.ev.' THEN 'č.ev. '
+                 WHEN NULLIF(ulice_nazev, '') IS NULL
+                      AND (cast_obce_nazev IS NULL
+                           OR cast_obce_nazev = obec_nazev)
+                   THEN 'č.p. '
+                 ELSE ''
+               END
+            || COALESCE(cislo_domovni::text, '')
+            || COALESCE('/' || cislo_orientacni::text, '')
+            || COALESCE(cislo_orientacni_znak, '')
+            || CASE WHEN NULLIF(ulice_nazev, '') IS NOT NULL
+                         AND cast_obce_nazev IS NOT NULL
+                         AND cast_obce_nazev <> obec_nazev
+                    THEN ', ' || cast_obce_nazev
+                    ELSE '' END
+            || ', '
+            || COALESCE(psc::text || ' ', '')
+            || COALESCE(mop_nazev, obec_nazev)
+"""
+
 
 # ---------------------------------------------------------------------------
 # Download
@@ -222,7 +264,7 @@ def materialize_new_table():
     /v1/search and the formatted_address response field.
     """
     print("Materializing cz_addresses_new with geometry and formatted_address…")
-    run_sql("""
+    run_sql(f"""
         CREATE TABLE cz_addresses_new AS
         SELECT
             kod_adm,
@@ -237,43 +279,7 @@ def materialize_new_table():
             plati_od,
             ST_SetSRID(ST_MakePoint(-y, -x), 5514)                       AS geometry_jtsk,
             ST_Transform(ST_SetSRID(ST_MakePoint(-y, -x), 5514), 4326)   AS geometry,
-            -- formatted_address per vyhláška 359/2011 Sb., příloha 1 (vzory 1–6).
-            -- Lokátor = ulice OR cast_obce (when ≠ obec); fallback to "č.p."
-            -- prefix only when neither is shown. "č.ev." is always present
-            -- before evidence numbers. cast_obce on its own line only when
-            -- a street is also shown AND it differs from obec. Praha gets
-            -- mop_nazev (e.g. "Praha 6") instead of plain obec_nazev — and
-            -- since mop_nazev is only populated for Praha addresses in
-            -- RUIAN, COALESCE(mop_nazev, obec_nazev) cleanly covers both.
-            -- Stored proper-case; the search GIN trigram index is built on
-            -- lower(formatted_address) so we don't need a duplicated column.
-            COALESCE(
-                NULLIF(ulice_nazev, '') || ' ',
-                CASE WHEN cast_obce_nazev IS NOT NULL
-                          AND cast_obce_nazev <> obec_nazev
-                     THEN cast_obce_nazev || ' ' END,
-                ''
-            )
-            || CASE
-                 WHEN typ_so = 'č.ev.' THEN 'č.ev. '
-                 WHEN NULLIF(ulice_nazev, '') IS NULL
-                      AND (cast_obce_nazev IS NULL
-                           OR cast_obce_nazev = obec_nazev)
-                   THEN 'č.p. '
-                 ELSE ''
-               END
-            || COALESCE(cislo_domovni::text, '')
-            || COALESCE('/' || cislo_orientacni::text, '')
-            || COALESCE(cislo_orientacni_znak, '')
-            || CASE WHEN NULLIF(ulice_nazev, '') IS NOT NULL
-                         AND cast_obce_nazev IS NOT NULL
-                         AND cast_obce_nazev <> obec_nazev
-                    THEN ', ' || cast_obce_nazev
-                    ELSE '' END
-            || ', '
-            || COALESCE(psc::text || ' ', '')
-            || COALESCE(mop_nazev, obec_nazev)
-            AS formatted_address
+            {FORMATTED_ADDRESS_SQL} AS formatted_address
         FROM cz_addresses_staging
         WHERE x IS NOT NULL AND y IS NOT NULL;
 

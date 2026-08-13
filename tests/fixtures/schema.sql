@@ -10,10 +10,16 @@
 -- planner can serve them from it, and a fixture without it would still pass
 -- while silently testing sequential scans.
 --
--- hr_addresses keeps formatted_address as a GENERATED column with the HR
--- importer's own expression, so the fixture exercises the real composition
--- rather than a copy of it. The CZ importer builds its column inside a
--- CREATE TABLE AS instead, so there the authentic strings are inserted.
+-- hr_addresses keeps formatted_address as a GENERATED column, but the
+-- expression is not written here: conftest fills the placeholder below in from
+-- importer.import_hr_wfs.FORMATTED_ADDRESS_SQL, so the fixture composes its
+-- labels exactly the way the importer does and cannot drift from it. (Do not
+-- name that placeholder anywhere else in this file — the substitution is a
+-- plain string replace and would splice SQL into a comment.)
+--
+-- The CZ importer builds its column inside a CREATE TABLE AS over staging
+-- columns this table does not carry, so there the authentic strings are
+-- inserted, and the expression itself is covered by test_formatted_address.py.
 --
 -- The native-projection geometries (geometry_jtsk / geometry_htrs96) are left
 -- out: nothing in api/ reads them, and dropping them keeps the seed data in
@@ -64,11 +70,7 @@ CREATE TABLE hr_addresses (
     ulica_redni_broj      bigint,
     postanski_broj        integer,
     geometry              geometry(Point, 4326),
-    formatted_address     text GENERATED ALWAYS AS (
-        COALESCE(ulica || ' ', '') || COALESCE(kucni_broj, '')
-        || ', '
-        || COALESCE(postanski_broj::text || ' ', '') || COALESCE(naselje, '')
-    ) STORED
+    formatted_address     text GENERATED ALWAYS AS ({hr_formatted_address}) STORED
 );
 
 CREATE INDEX cz_addr_search_trgm_idx
