@@ -135,6 +135,88 @@ def cz_row(**over):
     return row | over
 
 
+@pytest.mark.parametrize(
+    "over, expected",
+    [
+        ({}, "367"),
+        ({"cislo_orientacni": 27}, "367/27"),
+        ({"cislo_orientacni": 14, "cislo_orientacni_znak": "a"}, "367/14a"),
+        # A letter without an orientation number cannot happen in RUIAN, and
+        # the composition drops it rather than inventing "367a".
+        ({"cislo_orientacni_znak": "a"}, "367"),
+        ({"cislo_domovni": None}, None),
+    ],
+    ids=["house-only", "with-orientation", "with-letter", "letter-alone", "no-number"],
+)
+def test_cz_house_number_composition(over, expected):
+    assert cz_row_to_match(cz_row(**over), include_raw=False).house_number == expected
+
+
+@pytest.mark.parametrize(
+    "typ_so, expected",
+    [("č.p.", "house"), ("č.ev.", "registration"), (None, None), ("???", None)],
+)
+def test_cz_number_type(typ_so, expected):
+    assert cz_row_to_match(cz_row(typ_so=typ_so), include_raw=False).number_type == expected
+
+
+def test_cz_street_falls_back_to_part_of_municipality():
+    """Vyhláška vzor 5: a village address has no street, and the locator on the
+    envelope is the part-of-municipality."""
+    m = cz_row_to_match(
+        cz_row(ulice_nazev=None, cast_obce_nazev="Buřany", obec_nazev="Jablonec nad Jizerou"),
+        include_raw=False,
+    )
+
+    assert m.street == "Buřany"
+
+
+def test_cz_street_stays_empty_when_there_is_no_locator():
+    """Vzor 6: no street and a part-of-municipality equal to the municipality
+    leaves nothing to put on line 1, and inventing one would be wrong."""
+    m = cz_row_to_match(
+        cz_row(ulice_nazev=None, cast_obce_nazev="Vysoké nad Jizerou"), include_raw=False
+    )
+
+    assert m.street is None
+
+
+@pytest.mark.parametrize(
+    "over, expected",
+    [
+        ({}, "Vysoké nad Jizerou"),
+        # § 6 (2) c): Praha addresses carry the borough, which RUIAN populates
+        # in mop_nazev for Praha and leaves NULL everywhere else.
+        ({"obec_nazev": "Praha", "mop_nazev": "Praha 6"}, "Praha 6"),
+    ],
+    ids=["plain-municipality", "praha-borough"],
+)
+def test_cz_postal_city(over, expected):
+    assert cz_row_to_match(cz_row(**over), include_raw=False).city == expected
+
+
+def test_hr_number_type_defaults_to_house():
+    """DGU draws no č.p./č.ev. distinction, and a null here would force every
+    consumer into a source-specific branch."""
+    m = hr_row_to_match(
+        {
+            "inspire_id": "HR.DGU.RPJ:KB.0022072614",
+            "ulica": "Ilica",
+            "kucni_broj": "100",
+            "naselje": "Zagreb",
+            "postanski_broj": 10000,
+            "formatted_address": "Ilica 100, 10000 Zagreb",
+            "lon": 15.96335,
+            "lat": 45.81237,
+        },
+        include_raw=True,
+    )
+
+    assert m.number_type == "house"
+    assert m.score is None
+    assert m.raw["ulica"] == "Ilica"
+
+
 def test_cz_row_to_match_carries_the_search_score():
     m = cz_row_to_match(cz_row(), include_raw=False)
 
