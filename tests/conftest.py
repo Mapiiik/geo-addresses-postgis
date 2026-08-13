@@ -17,6 +17,7 @@ assertions — `%>>` and `~` return the same rows either way, the index is only
 an access path — but it does mean index usage itself cannot be tested here.
 """
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,12 @@ FIXTURES = Path(__file__).parent / "fixtures"
 TEST_SCHEMA = "geo_addresses_test"
 
 TEST_PG_CONN = os.environ.get("TEST_PG_CONN")
+
+# api.settings refuses to import without a connection string — deliberately, so
+# a misconfigured container fails at startup instead of on the first request.
+# The route tests never open the pool (they substitute db.get_conn), so the
+# value only has to exist.
+os.environ.setdefault("PG_CONN_API", TEST_PG_CONN or "host=localhost dbname=unused")
 
 requires_db = pytest.mark.skipif(
     not TEST_PG_CONN, reason="TEST_PG_CONN not set — skipping DB-backed tests"
@@ -62,6 +69,30 @@ async def seeded_conn():
         await conn.set_autocommit(True)
         await conn.execute(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE")
         await conn.close()
+
+
+@pytest_asyncio.fixture
+async def client(seeded_conn, monkeypatch):
+    """The real ASGI app, driven in-process, talking to the seeded schema.
+
+    `db.get_conn` is substituted rather than the pool opened, so no lifespan
+    runs and no sockets are involved — the routes still go through the genuine
+    dependency, validation and serialisation path.
+    """
+    import httpx
+
+    from api import db
+    from api.main import app
+
+    @asynccontextmanager
+    async def _conn():
+        yield seeded_conn
+
+    monkeypatch.setattr(db, "get_conn", _conn)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
 
 
 def labels(rows) -> list[str]:
