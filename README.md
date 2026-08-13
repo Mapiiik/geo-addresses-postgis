@@ -421,12 +421,48 @@ python3 -m importer.import_hr_wfs
 
 Requires `gdal-bin` on the host (provides `ogr2ogr`).
 
+## Tests
+
+`tests/` covers the `/v1/search` ranking rules and the pure-Python parts of
+`api/queries.py`. The search assertions run against a real PostGIS seeded with
+a curated handful of genuine RUIAN / DGU rows — the behaviour being pinned down
+is `pg_trgm`'s (word similarity, thresholds, word boundaries), so it cannot be
+faked with mocks.
+
+```bash
+pip install -r tests/requirements.txt
+
+# Any PostGIS will do. The fixtures create their own schema, set search_path
+# to it and drop it afterwards, so pointing this at a populated database is
+# safe — `public` is never touched.
+export TEST_PG_CONN="host=localhost user=addresses password=postgis dbname=addresses"
+
+pytest
+```
+
+Without `TEST_PG_CONN` the DB-backed tests skip and only the unit tests run.
+To use the bundled stack without exposing the DB port:
+
+```bash
+docker compose run --rm --no-deps -v "$PWD":/src -w /src \
+    -e TEST_PG_CONN="host=postgis user=addresses password=postgis dbname=addresses" \
+    addresses_api sh -c "pip install -q -r tests/requirements.txt && pytest"
+```
+
+GitHub Actions runs the same suite against a `postgis/postgis` service
+container on every push and pull request, plus a build of both images — see
+[.github/workflows/ci.yml](.github/workflows/ci.yml).
+
 ## Repo layout
 
 ```
 .
 ├── compose.production.yaml          # Production stack (postgis + importer + api)
 ├── .env.example                     # Configuration template
+├── pytest.ini
+├── .github/
+│   └── workflows/
+│       └── ci.yml                   # pytest against a PostGIS service + image build
 ├── importer/
 │   ├── Dockerfile                   # Importer image (Ubuntu + GDAL + Python)
 │   ├── db.py                        # Shared connection helpers
@@ -449,6 +485,12 @@ Requires `gdal-bin` on the host (provides `ogr2ogr`).
 │       └── 01-api-role.sh           # Creates the read-only API DB role
 ├── caddy/
 │   └── Caddyfile                    # Reverse proxy + automatic HTTPS config
+├── tests/
+│   ├── conftest.py                  # Throwaway seeded schema on a real PostGIS
+│   ├── fixtures/                    # Table definitions + curated real addresses
+│   ├── test_search.py               # /v1/search ranking rules
+│   ├── test_queries_unit.py         # Clause building + row → envelope mapping
+│   └── requirements.txt
 └── LICENSE.md
 ```
 
