@@ -173,6 +173,13 @@ def create_indexes(table_name):
         CREATE INDEX hr_addr_new_geometry_htrs96_idx
             ON {working_table} USING GIST (geometry_htrs96);
 
+        -- Reverse geocoding asks in metres, so its ST_DWithin runs against
+        -- geometry::geography. An index on the geometry column cannot serve a
+        -- predicate on that expression, and without this one the query reads
+        -- every row in the table.
+        CREATE INDEX hr_addr_new_geography_idx
+            ON {working_table} USING GIST ((geometry::geography));
+
         -- inspire_id is the stable HR address identifier (DGU INSPIRE format,
         -- e.g. "HR.DGU.RPJ:KB.0000021409"). Unlike ogc_fid — which ogr2ogr
         -- reassigns on every import — inspire_id is anchored in the source
@@ -228,6 +235,7 @@ def atomic_swap(table_name):
         ALTER SEQUENCE {working_seq} RENAME TO {final_seq};
 
         ALTER INDEX hr_addr_new_geometry_idx          RENAME TO hr_addr_geometry_idx;
+        ALTER INDEX hr_addr_new_geography_idx         RENAME TO hr_addr_geography_idx;
         ALTER INDEX hr_addr_new_geometry_htrs96_idx   RENAME TO hr_addr_geometry_htrs96_idx;
         ALTER INDEX hr_addr_new_inspire_id_idx        RENAME TO hr_addr_inspire_id_idx;
         ALTER INDEX hr_addr_new_street_idx            RENAME TO hr_addr_street_idx;

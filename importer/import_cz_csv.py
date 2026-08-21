@@ -302,6 +302,11 @@ def create_indexes_on_new():
     run_sql("""
         CREATE INDEX cz_addr_new_geometry_idx       ON cz_addresses_new USING GIST (geometry);
         CREATE INDEX cz_addr_new_geometry_jtsk_idx  ON cz_addresses_new USING GIST (geometry_jtsk);
+        -- Reverse geocoding asks in metres, so its ST_DWithin runs against
+        -- geometry::geography. An index on the geometry column cannot serve a
+        -- predicate on that expression, and without this one the query reads
+        -- every row in the table.
+        CREATE INDEX cz_addr_new_geography_idx      ON cz_addresses_new USING GIST ((geometry::geography));
         CREATE INDEX cz_addr_new_street_idx         ON cz_addresses_new (ulice_nazev);
         CREATE INDEX cz_addr_new_city_idx           ON cz_addresses_new (obec_nazev);
         CREATE INDEX cz_addr_new_psc_idx            ON cz_addresses_new (psc);
@@ -338,6 +343,7 @@ def atomic_swap():
 
         ALTER INDEX cz_addr_new_geometry_idx       RENAME TO cz_addr_geometry_idx;
         ALTER INDEX cz_addr_new_geometry_jtsk_idx  RENAME TO cz_addr_geometry_jtsk_idx;
+        ALTER INDEX cz_addr_new_geography_idx      RENAME TO cz_addr_geography_idx;
         ALTER INDEX cz_addr_new_street_idx         RENAME TO cz_addr_street_idx;
         ALTER INDEX cz_addr_new_city_idx           RENAME TO cz_addr_city_idx;
         ALTER INDEX cz_addr_new_psc_idx            RENAME TO cz_addr_psc_idx;

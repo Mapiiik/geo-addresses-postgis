@@ -405,6 +405,19 @@ local `compose.yaml` per the section above.)
 
 The PostGIS data volume (`postgis_data`) survives rebuilds.
 
+#### When an upgrade changes the schema
+
+The importers own the schema, including the indexes, and each run rebuilds its
+table from scratch — so a database that has been reimported since an upgrade is
+already whatever that version says it should be. One that has not is still on
+the old shape until the next scheduled run, which may be most of a month away.
+
+After upgrading to a version that changed the schema or the indexes, it is worth
+forcing a rebuild rather than waiting for the schedule — see **Manual run**
+above, and run both importers, since each owns its own table. Each builds into a
+new table and swaps it in at the end, so the API goes on answering from the old
+one throughout.
+
 ## Development / bare-metal
 
 If you want to run the importers outside Docker:

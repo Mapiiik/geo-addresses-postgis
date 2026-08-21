@@ -1,2 +1,7 @@
 .env
 compose.yaml
+
+# Python bytecode, left behind by any local test run
+__pycache__/
+*.py[cod]
+.pytest_cache/
