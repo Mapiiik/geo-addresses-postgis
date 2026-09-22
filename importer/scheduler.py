@@ -21,7 +21,7 @@ import os
 import time
 from datetime import datetime
 
-from importer import import_cz_csv, import_hr_admin_units, import_hr_wfs
+from importer import import_cz_csv, import_hr_addresses, import_hr_admin_units
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +41,7 @@ RUN_ON_START    = os.getenv("RUN_ON_START", "0") == "1"
 JOBS = [
     ("CZ RUIAN (CSV)",          import_cz_csv.main),
     ("HR DGU admin units (AU)", import_hr_admin_units.main),
-    ("HR DGU (WFS)",            import_hr_wfs.main),
+    ("HR DGU addresses (AD)",  import_hr_addresses.main),
 ]
 
 

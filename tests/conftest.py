@@ -54,7 +54,7 @@ def read_fixture(name: str) -> str:
     composing labels differently, which is precisely the drift these tests are
     supposed to notice.
     """
-    from importer.import_hr_wfs import FORMATTED_ADDRESS_SQL
+    from importer.import_hr_addresses import FORMATTED_ADDRESS_SQL
 
     sql = (FIXTURES / name).read_text(encoding="utf-8")
     return sql.replace("{hr_formatted_address}", FORMATTED_ADDRESS_SQL)

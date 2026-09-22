@@ -4,7 +4,8 @@ PostGIS-based address database for the Czech Republic and Croatia, kept up to
 date by automated monthly imports from the official open-data sources:
 
 - **CZ** — RUIAN address dump from [ČÚZK](https://vdp.cuzk.cz/) (CSV, monthly)
-- **HR** — INSPIRE Address WFS from [DGU geoportal](https://geoportal.dgu.hr/)
+- **HR** — INSPIRE Address package from [DGU geoportal](https://geoportal.dgu.hr/)
+  (ATOM download, monthly)
 
 The database is intended as a backend for downstream applications (e.g. CRM
 systems, geocoding, address validation), either via direct DB connection or
@@ -60,12 +61,11 @@ via the bundled REST API service.
 │  cz_addresses          │        │    (monthly cron loop)   │
 │  hr_addresses          │        │  • import_cz_csv         │
 │  hr_admin_units        │        │  • import_hr_admin_units │
-│  postgis_data (volume) │        │  • import_hr_wfs         │
+│  postgis_data (volume) │        │  • import_hr_addresses   │
 └────────────────────────┘        └──────────────────────────┘
                                           │
                                           ├── HTTPS → vdp.cuzk.cz (CZ)
-                                          ├── ATOM  → geoportal.dgu.hr (HR)
-                                          └── WFS   → geoportal.dgu.hr (HR)
+                                          └── ATOM  → geoportal.dgu.hr (HR)
 ```
 
 All four services share the default Compose network; the importer and API
@@ -97,7 +97,7 @@ docker compose -f compose.production.yaml run --rm addresses_importer \
     python3 -m importer.import_hr_admin_units
 
 docker compose -f compose.production.yaml run --rm addresses_importer \
-    python3 -m importer.import_hr_wfs
+    python3 -m importer.import_hr_addresses
 ```
 
 Indicative import times (fast SSD, your mileage will vary with network and disk):
@@ -105,9 +105,10 @@ Indicative import times (fast SSD, your mileage will vary with network and disk)
 - **CZ**: ~1 minute end-to-end (download ~60 MB ZIP, parallel COPY of ~6 200
   per-region CSVs into staging, materialise ~3M rows, build all indexes,
   atomic swap).
-- **HR**: ~3-4 minutes end-to-end. The WFS server is the bottleneck —
-  expect ~2-3 minutes streaming ~1.7M rows over the wire, plus ~1 minute
-  for the post-import column rewrites and indexing.
+- **HR**: ~3 minutes plus the download. The package is an 85 MB ZIP holding
+  2.6 GB of GML, which is read straight out of the archive; expect ~2 minutes
+  to stream ~1.7M rows into the table and ~1 minute for the post-import
+  column rewrites and indexing.
 
 ## Configuration
 
@@ -169,17 +170,25 @@ Indexes: GIST on both geometry columns, btree on `obec_nazev`, `ulice_nazev`,
 
 ### `hr_addresses`
 
-INSPIRE-flavoured schema as delivered by the DGU WFS. Key columns include
-`ulica` (street), `kucni_broj` (house number), `naselje` (settlement),
-`postanski_broj` (postcode), plus:
+INSPIRE-flavoured schema, keyed by `inspire_id` — the identifier the
+register files an address under (`HR.DGU.RPJ:KB.0000021409`), which is what
+downstream systems store. Key columns include `ulica` (street), `kucni_broj`
+(house number), `naselje` (settlement), `postanski_broj` (postcode), plus:
 
-- `geometry_htrs96` — `geometry(Point, 3765)` (native HTRS96 / TM)
+- `geometry_laea`   — `geometry(Point, 3035)` (ETRS89 / LAEA, the projection the package is published in)
+- `geometry_htrs96` — `geometry(Point, 3765)` (HTRS96 / TM, generated column)
 - `geometry`        — `geometry(Point, 4326)` (WGS84, generated column)
 - `formatted_address` — `text` ("ulica kucni_broj, postanski_broj naselje", generated column; also drives search via functional GIN index)
 - `zupanija`, `jls` — `character varying`, the county and the town or municipality, filled from `hr_admin_units` during the import (null where the units have not been imported, or where the settlement is not among them)
 
-Indexes: GIST on both geometries, btree on the four attribute columns above,
-GIN trigram on `lower(formatted_address)`.
+Indexes: GIST on the WGS84 and HTRS96 geometries, unique btree on
+`inspire_id`, btree on the four attribute columns above, GIN trigram on
+`lower(formatted_address)`.
+
+The columns the national model had and INSPIRE does not — the building
+(`zgrada_id`), the cadastral parcel (`broj_cestice`, `katastarska_opcina`)
+and the rotation of the house number on the map — are kept in the table but
+left empty.
 
 ### `hr_admin_units`
 
@@ -450,7 +459,8 @@ export PG_CONN_ADDRESSES="host=localhost user=addresses dbname=addresses passwor
 
 # from the repo root:
 python3 -m importer.import_cz_csv
-python3 -m importer.import_hr_wfs
+python3 -m importer.import_hr_admin_units
+python3 -m importer.import_hr_addresses
 ```
 
 Requires `gdal-bin` on the host (provides `ogr2ogr`).
@@ -503,7 +513,8 @@ container on every push and pull request, plus a build of both images — see
 │   ├── db.py                        # Shared connection helpers
 │   ├── scheduler.py                 # Monthly cron-like daemon
 │   ├── import_cz_csv.py             # RUIAN CSV importer (parallel COPY + atomic swap)
-│   ├── import_hr_wfs.py             # DGU WFS importer (ogr2ogr + atomic swap)
+│   ├── import_hr_addresses.py       # DGU address importer (INSPIRE package + atomic swap)
+│   ├── import_hr_admin_units.py     # DGU settlement → municipality → county lookup
 │   ├── requirements.txt
 │   └── archive/                     # Earlier import implementations, kept for reference
 ├── api/

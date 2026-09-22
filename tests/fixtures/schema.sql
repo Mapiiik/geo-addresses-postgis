@@ -21,9 +21,9 @@
 -- columns this table does not carry, so there the authentic strings are
 -- inserted, and the expression itself is covered by test_formatted_address.py.
 --
--- The native-projection geometries (geometry_jtsk / geometry_htrs96) are left
--- out: nothing in api/ reads them, and dropping them keeps the seed data in
--- plain WGS84.
+-- The other projections (geometry_jtsk for CZ, geometry_laea and
+-- geometry_htrs96 for HR) are left out: nothing in api/ reads them, and
+-- dropping them keeps the seed data in plain WGS84.
 
 CREATE TABLE cz_addresses (
     kod_adm               integer PRIMARY KEY,

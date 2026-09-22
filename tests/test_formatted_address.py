@@ -13,7 +13,7 @@ import pytest
 from psycopg.rows import dict_row
 
 from importer.import_cz_csv import FORMATTED_ADDRESS_SQL as CZ_SQL
-from importer.import_hr_wfs import FORMATTED_ADDRESS_SQL as HR_SQL
+from importer.import_hr_addresses import FORMATTED_ADDRESS_SQL as HR_SQL
 from tests.conftest import requires_db
 
 pytestmark = [pytest.mark.asyncio, requires_db]

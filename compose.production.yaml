@@ -95,7 +95,7 @@ volumes:
 
 # One-shot manual runs (bypassing the scheduler):
 #   docker compose -f compose.production.yaml run --rm addresses_importer python3 -m importer.import_cz_csv
-#   docker compose -f compose.production.yaml run --rm addresses_importer python3 -m importer.import_hr_wfs
+#   docker compose -f compose.production.yaml run --rm addresses_importer python3 -m importer.import_hr_addresses
 #
 # API docs are auto-served by FastAPI:
 #   http://localhost:8000/docs       (Swagger UI)
