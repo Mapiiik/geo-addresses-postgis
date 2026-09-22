@@ -426,6 +426,10 @@ def drop_duplicates(table_name):
     """
     working_table = f"{table_name}_new"
     run_sql(f"""
+        -- Finding them means sorting the whole table, which at the server's
+        -- default goes through temporary files.
+        SET work_mem = '256MB';
+
         DELETE FROM {working_table}
         WHERE ogc_fid IN (
             SELECT ogc_fid
@@ -553,6 +557,11 @@ def create_indexes(table_name):
     working_table = f"{table_name}_new"
     print(f"Creating indexes on {working_table}…")
     run_sql(f"""
+        -- Room to sort in, for this session only, as the CZ import asks for
+        -- too. At the server's default an index this size is built through
+        -- temporary files, which on a spinning disk is most of the step.
+        SET maintenance_work_mem = '512MB';
+
         -- Spatial indexes (GIST — required for spatial queries)
         CREATE INDEX hr_addr_new_geometry_idx
             ON {working_table} USING GIST (geometry);
@@ -588,15 +597,28 @@ def create_indexes(table_name):
     """)
 
 
-def make_logged_and_analyze(table_name):
-    """Switch the working table from UNLOGGED to LOGGED and analyze it.
+def make_logged(table_name):
+    """Switch the working table from UNLOGGED to LOGGED.
 
     UNLOGGED tables are wiped on crash and not replicated — fine for the
     bulk-load phase, but we want full durability for the live table.
+
+    Done before the indexes are built, because switching rewrites the table
+    and everything on it: an index built first would be built twice.
     """
     working_table = f"{table_name}_new"
-    print(f"Switching {working_table} to LOGGED and running ANALYZE…")
+    print(f"Switching {working_table} to LOGGED…")
     run_sql(f"ALTER TABLE {working_table} SET LOGGED;")
+
+
+def analyze(table_name):
+    """Gather the statistics the planner reads.
+
+    After the indexes, so that the expressions two of them are built on get
+    statistics of their own.
+    """
+    working_table = f"{table_name}_new"
+    print(f"Running ANALYZE on {working_table}…")
     run_sql(f"ANALYZE {working_table};")
 
 
@@ -669,8 +691,9 @@ def main():
     validate_import(TABLE)
     add_derived_columns(TABLE)
     add_administrative_units(TABLE)
+    make_logged(TABLE)
     create_indexes(TABLE)
-    make_logged_and_analyze(TABLE)
+    analyze(TABLE)
     atomic_swap(TABLE)
 
     elapsed = datetime.datetime.now() - started

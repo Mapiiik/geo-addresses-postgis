@@ -105,10 +105,12 @@ Indicative import times (fast SSD, your mileage will vary with network and disk)
 - **CZ**: ~1 minute end-to-end (download ~60 MB ZIP, parallel COPY of ~6 200
   per-region CSVs into staging, materialise ~3M rows, build all indexes,
   atomic swap).
-- **HR**: ~3 minutes plus the download. The package is an 85 MB ZIP holding
-  2.6 GB of GML, which is read straight out of the archive; expect ~2 minutes
-  to stream ~1.7M rows into the table and ~1 minute for the post-import
-  column rewrites and indexing.
+- **HR**: ~2 minutes plus the download on an SSD, and the better part of
+  quarter of an hour on a spinning disk. The package is an 85 MB ZIP holding
+  2.6 GB of GML, which is read straight out of the archive. Roughly half the
+  time is reading the GML, which is CPU-bound and the same wherever it runs;
+  the rest is the table rewrites and the indexes, and that is what a slow
+  disk multiplies.
 
 ## Configuration
 
