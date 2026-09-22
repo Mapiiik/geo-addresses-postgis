@@ -136,6 +136,22 @@ async def test_address_by_id_hr(client):
     assert r.json()["formatted_address"] == "Ilica 100, 10000 Zagreb"
 
 
+async def test_address_by_id_hr_says_the_county_and_the_municipality(client):
+    """What the Croatian regulator files an address under. It comes from the
+    administrative units, imported apart from the addresses, so an address
+    whose settlement was not among them answers null rather than failing."""
+    r = await client.get("/v1/addresses/hr/HR.DGU.RPJ:KB.0000601045")
+
+    assert r.status_code == 200
+    assert r.json()["county"] == "Splitsko-dalmatinska županija"
+    assert r.json()["municipality"] == "Makarska"
+
+    r = await client.get(f"/v1/addresses/hr/{HR_ID}")
+
+    assert r.json()["county"] is None
+    assert r.json()["municipality"] is None
+
+
 async def test_address_by_id_not_found(client):
     r = await client.get("/v1/addresses/cz/1")
 

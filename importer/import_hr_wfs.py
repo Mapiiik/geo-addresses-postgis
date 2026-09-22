@@ -39,6 +39,10 @@ LAYERS = {
 }
 
 # Native Croatian SRID (HTRS96 / TM) and the WGS84 SRID we use for queries
+# The settlement, the municipality and the county, as
+# importer.import_hr_admin_units builds them.
+ADMIN_UNITS_TABLE = "hr_admin_units"
+
 NATIVE_SRID = 3765
 WGS84_SRID = 4326
 
@@ -114,6 +118,20 @@ def import_layer(layer_name, table_name):
     ]
     subprocess.run(cmd, check=True)
 
+def has_table(table_name):
+    """Whether a table is there to be read."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (table_name,))
+        exists = cur.fetchone()[0]
+        cur.close()
+    finally:
+        conn.close()
+
+    return bool(exists)
+
+
 def validate_import(table_name):
     """Sanity-check the import before we let it replace the live table."""
     working_table = f"{table_name}_new"
@@ -152,6 +170,43 @@ def add_derived_columns(table_name):
                 GENERATED ALWAYS AS (ST_Transform(geometry_htrs96, {WGS84_SRID})) STORED,
             ADD COLUMN formatted_address text
                 GENERATED ALWAYS AS ({FORMATTED_ADDRESS_SQL}) STORED;
+    """)
+
+
+def add_administrative_units(table_name):
+    """Say which municipality and which county each address is in.
+
+    Joined on the settlement the address carries, which is the very number the
+    register keeps the settlement under. The columns are added whether or not
+    the lookup is there, because the API selects them: an installation that has
+    not imported the administrative units yet answers with nulls rather than
+    with an error, and the next import fills them in.
+
+    Done here rather than by a view so that a lookup rebuilt between address
+    imports cannot change what an address answered halfway through a run.
+    """
+    working_table = f"{table_name}_new"
+    print(f"Adding zupanija and jls to {working_table}…")
+    run_sql(f"""
+        ALTER TABLE {working_table}
+            ADD COLUMN zupanija character varying,
+            ADD COLUMN jls character varying;
+    """)
+
+    if not has_table(ADMIN_UNITS_TABLE):
+        print(
+            f"  {ADMIN_UNITS_TABLE} is not there, leaving them empty — "
+            "run importer.import_hr_admin_units and import the addresses again."
+        )
+
+        return
+
+    run_sql(f"""
+        UPDATE {working_table} AS addresses
+        SET zupanija = units.zupanija,
+            jls = units.jls
+        FROM {ADMIN_UNITS_TABLE} AS units
+        WHERE units.naselje_id = addresses.naselje_id;
     """)
 
 
@@ -262,6 +317,7 @@ def main():
         import_layer(layer, table)
         validate_import(table)
         add_derived_columns(table)
+        add_administrative_units(table)
         create_indexes(table)
         make_logged_and_analyze(table)
         atomic_swap(table)

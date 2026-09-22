@@ -69,6 +69,8 @@ CREATE TABLE hr_addresses (
     katastarska_opcina_id bigint,
     ulica_redni_broj      bigint,
     postanski_broj        integer,
+    zupanija              character varying,
+    jls                   character varying,
     geometry              geometry(Point, 4326),
     formatted_address     text GENERATED ALWAYS AS ({hr_formatted_address}) STORED
 );

@@ -35,6 +35,7 @@ HR_COLUMNS = """
     naselje, naselje_id,
     postanski_ured, postanski_ured_id, postanski_broj,
     katastarska_opcina, katastarska_opcina_id,
+    zupanija, jls,
     broj_cestice, ostale_vezane_cestice,
     formatted_address,
     ST_X(geometry) AS lon,
@@ -209,6 +210,10 @@ def hr_row_to_match(row: dict[str, Any], include_raw: bool) -> AddressMatch:
         number_type="house",
         city=_str_or_none(row.get("naselje")),
         postal_code=_str_or_none(row.get("postanski_broj")),
+        # What the regulator's address returns are filed by: the county and the
+        # town or municipality the settlement belongs to.
+        county=_str_or_none(row.get("zupanija")),
+        municipality=_str_or_none(row.get("jls")),
         formatted_address=_str_or_none(row.get("formatted_address")),
         geometry=Geometry(coordinates=(row["lon"], row["lat"])),
         distance_m=row.get("distance_m"),

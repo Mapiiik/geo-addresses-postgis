@@ -21,7 +21,7 @@ import os
 import time
 from datetime import datetime
 
-from importer import import_cz_csv, import_hr_wfs
+from importer import import_cz_csv, import_hr_admin_units, import_hr_wfs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,9 +36,12 @@ SCHEDULE_MINUTE = int(os.getenv("SCHEDULE_MINUTE", "0"))
 RUN_ON_START    = os.getenv("RUN_ON_START", "0") == "1"
 
 # (label, callable) — order = run order each month
+# The administrative units go before the addresses: the address import reads
+# them to say which municipality and county an address is in.
 JOBS = [
-    ("CZ RUIAN (CSV)", import_cz_csv.main),
-    ("HR DGU (WFS)",   import_hr_wfs.main),
+    ("CZ RUIAN (CSV)",          import_cz_csv.main),
+    ("HR DGU admin units (AU)", import_hr_admin_units.main),
+    ("HR DGU (WFS)",            import_hr_wfs.main),
 ]
 
 

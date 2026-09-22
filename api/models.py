@@ -57,6 +57,22 @@ class AddressMatch(BaseModel):
         ),
     )
     postal_code: str | None = None
+    county: str | None = Field(
+        default=None,
+        description=(
+            "The county the address is in (HR županija), where the source says "
+            "so. HR only, and only once the administrative units have been "
+            "imported; null for CZ."
+        ),
+    )
+    municipality: str | None = Field(
+        default=None,
+        description=(
+            "The town or municipality the address is in (HR jedinica lokalne "
+            "samouprave), where the source says so. HR only, and only once the "
+            "administrative units have been imported; null for CZ."
+        ),
+    )
     formatted_address: str | None = Field(
         default=None,
         description=(

@@ -64,29 +64,33 @@ INSERT INTO cz_addresses (
 (16901509, 'Jablonec nad Jizerou', NULL, NULL, 'Buřany', NULL, 'č.p.', 33, NULL, NULL, 51243,
  ST_SetSRID(ST_MakePoint(15.45115, 50.70490), 4326), 'Buřany 33, 51243 Jablonec nad Jizerou');
 
+-- The county and the municipality come from the administrative units, imported
+-- apart from the addresses: only the Makarska row carries them, so that a row
+-- without them is covered as well.
 INSERT INTO hr_addresses (
-    inspire_id, ulica, kucni_broj, naselje, postanski_broj, geometry
+    inspire_id, ulica, kucni_broj, naselje, postanski_broj, zupanija, jls, geometry
 ) VALUES
 -- "Ilica 100" versus the 10000 postcode every Zagreb label carries: a house
 -- number anchored only at its start matches the postcode too, which buried the
 -- real hit under thousands of unrelated Zagreb addresses.
-('HR.DGU.RPJ:KB.0022072614', 'Ilica', '100', 'Zagreb', 10000,
+('HR.DGU.RPJ:KB.0022072614', 'Ilica', '100', 'Zagreb', 10000, NULL, NULL,
  ST_SetSRID(ST_MakePoint(15.96335, 45.81237), 4326)),
-('HR.DGU.RPJ:KB.0022133647', 'Ilica', '45/1', 'Zagreb', 10000,
+('HR.DGU.RPJ:KB.0022133647', 'Ilica', '45/1', 'Zagreb', 10000, NULL, NULL,
  ST_SetSRID(ST_MakePoint(15.96901, 45.81271), 4326)),
 -- Letter-suffixed house numbers: searching "1" still has to reach "1A".
-('HR.DGU.RPJ:KB.0022075271', 'Ilica', '1', 'Zagreb', 10000,
+('HR.DGU.RPJ:KB.0022075271', 'Ilica', '1', 'Zagreb', 10000, NULL, NULL,
  ST_SetSRID(ST_MakePoint(15.97593, 45.81294), 4326)),
-('HR.DGU.RPJ:KB.0022075272', 'Ilica', '1A', 'Zagreb', 10000,
+('HR.DGU.RPJ:KB.0022075272', 'Ilica', '1A', 'Zagreb', 10000, NULL, NULL,
  ST_SetSRID(ST_MakePoint(15.97574, 45.81294), 4326)),
 -- "ulica" is Croatian for "street" and appears in a large share of all labels,
 -- so it is the natural fuzzy near-match for a search for "Ilica".
-('HR.DGU.RPJ:KB.0022044140', 'Novačka ulica', '100', 'Zagreb', 10040,
+('HR.DGU.RPJ:KB.0022044140', 'Novačka ulica', '100', 'Zagreb', 10040, NULL, NULL,
  ST_SetSRID(ST_MakePoint(16.03787, 45.83970), 4326)),
-('HR.DGU.RPJ:KB.0022111689', 'Ulica breza', '100', 'Zagreb', 10040,
+('HR.DGU.RPJ:KB.0022111689', 'Ulica breza', '100', 'Zagreb', 10040, NULL, NULL,
  ST_SetSRID(ST_MakePoint(16.07502, 45.82639), 4326)),
 -- Diacritics-heavy street, used for the README's own example query.
 ('HR.DGU.RPJ:KB.0000601045', 'Stjepana Ivičevića', '7', 'Makarska', 21300,
+ 'Splitsko-dalmatinska županija', 'Makarska',
  ST_SetSRID(ST_MakePoint(17.02338, 43.29218), 4326));
 
 ANALYZE cz_addresses;

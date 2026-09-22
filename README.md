@@ -59,10 +59,12 @@ via the bundled REST API service.
 │                        │        │  • importer.scheduler    │
 │  cz_addresses          │        │    (monthly cron loop)   │
 │  hr_addresses          │        │  • import_cz_csv         │
+│  hr_admin_units        │        │  • import_hr_admin_units │
 │  postgis_data (volume) │        │  • import_hr_wfs         │
 └────────────────────────┘        └──────────────────────────┘
                                           │
                                           ├── HTTPS → vdp.cuzk.cz (CZ)
+                                          ├── ATOM  → geoportal.dgu.hr (HR)
                                           └── WFS   → geoportal.dgu.hr (HR)
 ```
 
@@ -88,6 +90,11 @@ DB right away, trigger a one-shot run:
 ```bash
 docker compose -f compose.production.yaml run --rm addresses_importer \
     python3 -m importer.import_cz_csv
+
+# The administrative units go first: the address import reads them to say
+# which municipality and county an address is in.
+docker compose -f compose.production.yaml run --rm addresses_importer \
+    python3 -m importer.import_hr_admin_units
 
 docker compose -f compose.production.yaml run --rm addresses_importer \
     python3 -m importer.import_hr_wfs
@@ -169,9 +176,23 @@ INSPIRE-flavoured schema as delivered by the DGU WFS. Key columns include
 - `geometry_htrs96` — `geometry(Point, 3765)` (native HTRS96 / TM)
 - `geometry`        — `geometry(Point, 4326)` (WGS84, generated column)
 - `formatted_address` — `text` ("ulica kucni_broj, postanski_broj naselje", generated column; also drives search via functional GIN index)
+- `zupanija`, `jls` — `character varying`, the county and the town or municipality, filled from `hr_admin_units` during the import (null where the units have not been imported, or where the settlement is not among them)
 
 Indexes: GIST on both geometries, btree on the four attribute columns above,
 GIN trigram on `lower(formatted_address)`.
+
+### `hr_admin_units`
+
+The register's chain above an address, built by `importer.import_hr_admin_units`
+from the DGU's INSPIRE Administrative Units download: one row per settlement,
+keyed by `naselje_id` — the very number `hr_addresses.naselje_id` carries.
+
+- `naselje_id`, `naselje` — the settlement
+- `jls_code`, `jls` — the town or municipality it belongs to
+- `zupanija_code`, `zupanija` — the county above that
+
+The download holds every boundary in the country, some 600 MB of them; the
+geometry is dropped as the file is read and only the names and codes are kept.
 
 ### Required PostgreSQL extensions
 
